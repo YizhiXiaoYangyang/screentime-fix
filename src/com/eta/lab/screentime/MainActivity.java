@@ -3,14 +3,12 @@ package com.eta.lab.screentime;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.TimePickerDialog;
-import android.content.ContentResolver;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
-import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -32,9 +30,6 @@ import java.util.Locale;
  * UI 全部自绘（HyperOS / Miuix 风格），支持深浅色、动态主色、沉浸式状态栏。
  */
 public class MainActivity extends Activity {
-
-    private static final int COLOR_OK = 0xFF34C759;
-    private static final int COLOR_WARN = 0xFFFF453A;
 
     private final List<int[]> mWindows = new ArrayList<>();
     private final List<String> mHideApps = new ArrayList<>();
@@ -60,7 +55,6 @@ public class MainActivity extends Activity {
     private Ui.Timeline mTimeline;
     private TextView mStatusTitle;
     private TextView mStatusSub;
-    private StatusDot mDot;
     private TextView mBigTotal;
     private TextView mPercent;
     private TextView mScaleLabels;
@@ -127,17 +121,12 @@ public class MainActivity extends Activity {
         statusRow.setOrientation(LinearLayout.HORIZONTAL);
         statusRow.setGravity(Gravity.CENTER_VERTICAL);
 
-        mDot = new StatusDot(this);
-        statusRow.addView(mDot, new LinearLayout.LayoutParams(Ui.dp(this, 22), Ui.dp(this, 22)));
-
         LinearLayout statusTexts = new LinearLayout(this);
         statusTexts.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        stLp.leftMargin = Ui.dp(this, 8);
-        statusRow.addView(statusTexts, stLp);
+        statusRow.addView(statusTexts, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        mStatusTitle = Ui.label(this, "检查中…", 17, Ui.text(this));
+        mStatusTitle = Ui.label(this, "已开启", 17, Ui.text(this));
         mStatusTitle.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
                 android.graphics.Typeface.NORMAL));
         statusTexts.addView(mStatusTitle);
@@ -353,7 +342,7 @@ public class MainActivity extends Activity {
         osLp.topMargin = Ui.dp(this, 14);
         mScrollBody.addView(openStats, osLp);
 
-        TextView ver = Ui.label(this, "v3.0 · 作用域只勾「设置」", 11, Ui.sub(this));
+        TextView ver = Ui.label(this, "v3.1 · 作用域只勾「设置」", 11, Ui.sub(this));
         ver.setAlpha(0.75f);
         ver.setGravity(Gravity.CENTER_HORIZONTAL);
         LinearLayout.LayoutParams verLp = new LinearLayout.LayoutParams(
@@ -454,31 +443,19 @@ public class MainActivity extends Activity {
 
 
     private void load() {
-        ContentResolver cr = getContentResolver();
-        boolean enabled = Settings.Global.getInt(cr, Cfg.KEY_ENABLED, 1) != 0;
-        String raw = Settings.Global.getString(cr, Cfg.KEY_WINDOWS);
+        // 配置存在模块自己的 SharedPreferences 里（首次会自动把 Settings.Global 的老值搬过来）
+        Cfg.Snapshot s = Store.load(this);
         mWindows.clear();
-        if (raw == null) {
-            int st = Settings.Global.getInt(cr, Cfg.KEY_START_OLD, 30);
-            int en = Settings.Global.getInt(cr, Cfg.KEY_END_OLD, 420);
-            mWindows.addAll(Cfg.parse(st + "-" + en));
-        } else {
-            mWindows.addAll(Cfg.parse(raw));   // 允许为空：空 = 不隐藏
-        }
-        String hideRaw = Settings.Global.getString(cr, Cfg.KEY_HIDE_APPS);
+        mWindows.addAll(s.windows);   // 允许为空：空 = 不隐藏
         mHideApps.clear();
-        mHideApps.addAll(Cfg.parseApps(hideRaw));
+        mHideApps.addAll(s.hideApps);
+        mScope = s.scope;
+        mWeekdays = s.weekdays;
+        mToday = s.today;
+        mCap = s.cap;
+        mJitter = s.jitter;
 
-        String scope = Settings.Global.getString(cr, Cfg.KEY_SCOPE);
-        mScope = scope == null || scope.trim().isEmpty() ? Cfg.SCOPE_ALL : scope.trim();
-        String weekdays = Settings.Global.getString(cr, Cfg.KEY_WEEKDAYS);
-        mWeekdays = weekdays == null || weekdays.trim().isEmpty() ? "1,2,3,4,5" : weekdays.trim();
-        String today = Settings.Global.getString(cr, Cfg.KEY_TODAY);
-        mToday = today == null ? "" : today.trim();
-        mCap = Math.max(0, Settings.Global.getInt(cr, Cfg.KEY_CAP, 0));
-        mJitter = Cfg.clampJitter(Settings.Global.getInt(cr, Cfg.KEY_JITTER, 0));
-
-        mSwitch.setChecked(enabled);
+        mSwitch.setChecked(s.enabled);
         mSwitch.setOnChange(this::refreshStatus);
         rebuildList();
         rebuildAppsList();
@@ -486,39 +463,21 @@ public class MainActivity extends Activity {
         refreshStatus();
     }
 
+    /**
+     * 状态卡只讲「开关 + 怎么才生效」，不再声称命中与否。
+     * v3.1 砍掉了状态灯：原来靠 hook 往 Settings.Global 写 stfix_hook_at / stfix_hook_msg 回显，
+     * 那需要 WRITE_SECURE_SETTINGS，现在整条链路都不要了。
+     */
     private void refreshStatus() {
-        long at = Settings.Global.getLong(getContentResolver(), Cfg.KEY_HOOK_AT, 0L);
-        long skipAt = Settings.Global.getLong(getContentResolver(), Cfg.KEY_SKIP_AT, 0L);
-        String msg = Settings.Global.getString(getContentResolver(), Cfg.KEY_HOOK_MSG);
-        long age = System.currentTimeMillis() - at;
         boolean on = mSwitch.isChecked();
-
-        if (msg != null && !msg.isEmpty()) {
-            mDot.setColor(COLOR_WARN, false);
-            mStatusTitle.setText("出错了");
-            mStatusTitle.setTextColor(COLOR_WARN);
-            mStatusSub.setText(msg);
-        } else if (!on) {
-            mDot.setColor(0xFF8E8E93, false);
-            mStatusTitle.setText("已关闭");
-            mStatusTitle.setTextColor(Ui.text(this));
+        mStatusTitle.setText(on ? "已开启" : "已关闭");
+        mStatusTitle.setTextColor(on ? Ui.text(this) : Ui.sub(this));
+        if (!on) {
             mStatusSub.setText("统计会显示真实数据");
-        } else if (skipAt > at && System.currentTimeMillis() - skipAt < 10 * 60_000L) {
-            mDot.setColor(0xFF8E8E93, false);
-            mStatusTitle.setText("今天不生效");
-            mStatusTitle.setTextColor(Ui.text(this));
-            mStatusSub.setText("生效范围：" + scopeText()
-                    + (mToday == null || mToday.isEmpty() ? "" : " · 只限 " + mToday));
-        } else if (at > 0 && age < 10 * 60_000L) {
-            mDot.setColor(COLOR_OK, true);
-            mStatusTitle.setText("保护中");
-            mStatusTitle.setTextColor(Ui.text(this));
-            mStatusSub.setText(Math.max(0, age / 60_000L) + " 分钟前刚命中过");
+        } else if (!Cfg.shouldApply(mScope, mWeekdays, mToday, java.util.Calendar.getInstance())) {
+            mStatusSub.setText("今天不在生效范围（" + scopeText() + "），数字显示真实的");
         } else {
-            mDot.setColor(COLOR_WARN, false);
-            mStatusTitle.setText("还没命中");
-            mStatusTitle.setTextColor(Ui.text(this));
-            mStatusSub.setText("确认 LSPosed 作用域勾了「设置」，再打开一次时长页面");
+            mStatusSub.setText("作用域勾了「设置」并打开一次时长页面即生效");
         }
         updateTotals();
     }
@@ -1048,23 +1007,17 @@ public class MainActivity extends Activity {
 
     private void write() {
         try {
-            ContentResolver cr = getContentResolver();
-            Settings.Global.putInt(cr, Cfg.KEY_ENABLED, mSwitch.isChecked() ? 1 : 0);
-            Settings.Global.putString(cr, Cfg.KEY_WINDOWS, Cfg.join(mWindows));
-            Settings.Global.putString(cr, Cfg.KEY_HIDE_APPS, Cfg.joinApps(mHideApps));
-            Settings.Global.putString(cr, Cfg.KEY_SCOPE, mScope);
-            Settings.Global.putString(cr, Cfg.KEY_WEEKDAYS, mWeekdays);
-            Settings.Global.putString(cr, Cfg.KEY_TODAY, mToday);
-            Settings.Global.putInt(cr, Cfg.KEY_CAP, mCap);
-            Settings.Global.putInt(cr, Cfg.KEY_JITTER, Cfg.clampJitter(mJitter));
+            // 存进模块自己的 SharedPreferences，不需要任何权限；hook 端下一次读就是新值
+            Store.save(this, mSwitch.isChecked(), mWindows, mHideApps,
+                    mScope, mWeekdays, mToday, mCap, mJitter);
             String desc = mWindows.isEmpty() ? "没有时间段，等于不隐藏"
                     : (!mSwitch.isChecked() ? "已关闭" : Cfg.join(mWindows));
             toast("已保存：" + desc);
+            refreshStatus();
             mScroll.animate().alpha(0.35f).setDuration(120).withEndAction(() ->
                     mScroll.animate().alpha(1f).setDuration(220).start()).start();
-        } catch (SecurityException e) {
-            toast("没有写入权限：需要 pm grant com.eta.lab.screentime "
-                    + "android.permission.WRITE_SECURE_SETTINGS");
+        } catch (Throwable t) {
+            toast("保存失败：" + t);
         }
     }
 
@@ -1104,50 +1057,4 @@ public class MainActivity extends Activity {
         return (h == Math.round(h) ? String.valueOf((int) h) : String.format(Locale.US, "%.1f", h)) + "h";
     }
 
-    // ==================== 状态圆点（带呼吸动画） ====================
-
-    static class StatusDot extends View {
-        private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-        private final android.graphics.Paint halo = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-        private int color = 0xFF8E8E93;
-        private boolean breathing;
-        private float pulse = 0f;
-
-        StatusDot(android.content.Context c) {
-            super(c);
-            halo.setStyle(android.graphics.Paint.Style.FILL);
-        }
-
-        void setColor(int c, boolean doBreathing) {
-            color = c;
-            breathing = doBreathing;
-            invalidate();
-            if (doBreathing) startPulse();
-        }
-
-        private void startPulse() {
-            android.animation.ValueAnimator va = android.animation.ValueAnimator.ofFloat(0f, 1f);
-            va.setDuration(1600);
-            va.setRepeatCount(android.animation.ValueAnimator.INFINITE);
-            va.setRepeatMode(android.animation.ValueAnimator.RESTART);
-            va.addUpdateListener(a -> {
-                pulse = (float) a.getAnimatedValue();
-                invalidate();
-            });
-            va.start();
-        }
-
-        @Override
-        protected void onDraw(android.graphics.Canvas cv) {
-            float cx = getWidth() / 2f, cy = getHeight() / 2f;
-            float r = Math.min(cx, cy) * 0.30f;
-            if (breathing) {
-                float pr = r + r * 1.5f * pulse;
-                halo.setColor((color & 0x00FFFFFF) | (int) (0x40 * (1 - pulse)) << 24);
-                cv.drawCircle(cx, cy, pr, halo);
-            }
-            p.setColor(color);
-            cv.drawCircle(cx, cy, r, p);
-        }
-    }
 }

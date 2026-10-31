@@ -204,6 +204,111 @@ public class CoreTest {
         // 29 次里扣掉 3 次 → 上期 34 折成 30，差值 -4（真实 -5），不再翻成正数
         eq("eff last 34", 30, Cfg.scaleCount(34, Cfg.effectiveRatio(29, 26, 0.27)));
 
+        // ---------- v3.1：配置通道（Reader / Snapshot / 老值迁移）----------
+        // parseBool / parseInt：只有明确的 0/false/off 才算关
+        eqTrue("bool null -> fallback true", Cfg.parseBool(null, true));
+        eqFalse("bool null -> fallback false", Cfg.parseBool(null, false));
+        eqFalse("bool 0", Cfg.parseBool("0", true));
+        eqFalse("bool false", Cfg.parseBool(" false ", true));
+        eqFalse("bool off", Cfg.parseBool("OFF", true));
+        eqTrue("bool 1", Cfg.parseBool("1", false));
+        eqTrue("bool garbage -> 当开", Cfg.parseBool("abc", false));
+        eqFalse("bool empty -> fallback(false)", Cfg.parseBool("  ", false));
+        eqTrue("bool empty -> fallback(true)", Cfg.parseBool("  ", true));
+        eq("int null", 7, Cfg.parseInt(null, 7));
+        eq("int junk", 7, Cfg.parseInt("x", 7));
+        eq("int ok", 42, Cfg.parseInt(" 42 ", 7));
+
+        // 老键回退：没设过 stfix_windows 才用 stfix_start/stfix_end
+        eqTrue("legacy null -> start-end", "30-420".equals(Cfg.windowsFromLegacy(null, 30, 420)));
+        eqTrue("legacy raw wins", "0-60".equals(Cfg.windowsFromLegacy("0-60", 30, 420)));
+        eqTrue("legacy empty stays empty", "".equals(Cfg.windowsFromLegacy("", 30, 420)));
+
+        // 迁移判定：新通道有值 或 已经搬过，都不搬
+        eqTrue("migrate needed", Cfg.shouldMigrate(false, false));
+        eqFalse("migrate done", Cfg.shouldMigrate(true, false));
+        eqFalse("migrate store has values", Cfg.shouldMigrate(false, true));
+
+        // 标记键不算配置（KEY_VER / KEY_MIGRATED 单独存不算「有配置」）
+        java.util.Set<String> markOnly = new java.util.HashSet<>();
+        markOnly.add(Cfg.KEY_VER);
+        markOnly.add(Cfg.KEY_MIGRATED);
+        eqFalse("ver/migrated not config", Cfg.hasConfigValues(markOnly));
+        eqFalse("empty not config", Cfg.hasConfigValues(new java.util.ArrayList<String>()));
+        eqTrue("enabled is config", Cfg.hasConfigValues(java.util.Arrays.asList(Cfg.KEY_ENABLED)));
+        eqTrue("windows is config", Cfg.hasConfigValues(java.util.Arrays.asList(Cfg.KEY_WINDOWS)));
+
+        // fromSource：空源 = 默认值（开启 + 30-420 + scope=all + cap 0 + jitter 0）
+        Cfg.Snapshot s0 = Cfg.fromSource(k -> null, sat);
+        eqTrue("snap default enabled", s0.enabled);
+        eq("snap default windows", 1, s0.windows.size());
+        eq("snap default win start", 30, s0.windows.get(0)[0]);
+        eq("snap default win end", 420, s0.windows.get(0)[1]);
+        eq("snap default hide", 0, s0.hideApps.size());
+        eqTrue("snap default scope", Cfg.SCOPE_ALL.equals(s0.scope));
+        eqTrue("snap default weekdays", Cfg.DEFAULT_WEEKDAYS.equals(s0.weekdays));
+        eqTrue("snap default today empty", s0.today.isEmpty());
+        eq("snap default cap", 0, s0.cap);
+        eq("snap default jitter", 0, s0.jitter);
+        eqTrue("snap default hasWork", Cfg.fromSource(k -> null, sat).hasWork());
+
+        // fromSource：真实值解析 + 归一
+        java.util.Map<String, String> kv = new java.util.HashMap<>();
+        kv.put(Cfg.KEY_ENABLED, "0");
+        kv.put(Cfg.KEY_WINDOWS, "120-540");
+        kv.put(Cfg.KEY_HIDE_APPS, "com.a.com, com.b");
+        kv.put(Cfg.KEY_SCOPE, " CUSTOM ");
+        kv.put(Cfg.KEY_WEEKDAYS, "2,4");
+        kv.put(Cfg.KEY_TODAY, " 2026-10-31 ");
+        kv.put(Cfg.KEY_CAP, "9999");
+        kv.put(Cfg.KEY_JITTER, "9");
+        Cfg.Snapshot s1 = Cfg.fromSource(kv::get, sat);
+        eqFalse("snap enabled 0", s1.enabled);
+        // 这条 kv 里带了 jitter=9（会被夹到 5），所以窗口起止会偏 ±5 分钟
+        eqTrue("snap windows start ~120", Math.abs(s1.windows.get(0)[0] - 120) <= Cfg.MAX_JITTER);
+        eqTrue("snap windows end ~540", Math.abs(s1.windows.get(0)[1] - 540) <= Cfg.MAX_JITTER);
+        eq("snap hide 2", 2, s1.hideApps.size());
+        eqTrue("snap scope trimmed lower", Cfg.SCOPE_CUSTOM.equals(s1.scope));
+        eqTrue("snap weekdays trimmed", "2,4".equals(s1.weekdays));
+        eqTrue("snap today trimmed", "2026-10-31".equals(s1.today));
+        eq("snap cap clamped 1440", 1440, s1.cap);
+        eq("snap jitter clamped 5", 5, s1.jitter);
+        eqFalse("snap off -> no work", s1.hasWork());
+
+        // fromSource：空串 = 用户清空 = 不隐藏（不能当 null 回退老键）
+        java.util.Map<String, String> kv2 = new java.util.HashMap<>();
+        kv2.put(Cfg.KEY_WINDOWS, "");
+        kv2.put(Cfg.KEY_START_OLD, "30");
+        kv2.put(Cfg.KEY_END_OLD, "420");
+        eq("snap empty windows", 0, Cfg.fromSource(kv2::get, sat).windows.size());
+
+        // fromSource：只有老键、没有 stfix_windows 时按老键走
+        java.util.Map<String, String> kv3 = new java.util.HashMap<>();
+        kv3.put(Cfg.KEY_START_OLD, "60");
+        kv3.put(Cfg.KEY_END_OLD, "90");
+        Cfg.Snapshot s3 = Cfg.fromSource(kv3::get, sat);
+        eq("snap legacy start", 60, s3.windows.get(0)[0]);
+        eq("snap legacy end", 90, s3.windows.get(0)[1]);
+
+        // fromSource：抖动参数生效但不改「覆盖了多少分钟」的语义，且同一天稳定
+        java.util.Map<String, String> kv4 = new java.util.HashMap<>();
+        kv4.put(Cfg.KEY_WINDOWS, "600-660");
+        kv4.put(Cfg.KEY_JITTER, "3");
+        Cfg.Snapshot js1 = Cfg.fromSource(kv4::get, sat);
+        Cfg.Snapshot js2 = Cfg.fromSource(kv4::get, sat);
+        eq("snap jitter stored", 3, js1.jitter);
+        eq("snap jitter stable start", js1.windows.get(0)[0], js2.windows.get(0)[0]);
+        eq("snap jitter stable end", js1.windows.get(0)[1], js2.windows.get(0)[1]);
+        eqTrue("snap jitter start near 600",
+                Math.abs(js1.windows.get(0)[0] - 600) <= Cfg.MAX_JITTER);
+        eqTrue("snap jitter end near 660",
+                Math.abs(js1.windows.get(0)[1] - 660) <= Cfg.MAX_JITTER);
+
+        // 关掉但留着窗口：仍然 hasWork=false（开关优先）
+        java.util.Map<String, String> kv5 = new java.util.HashMap<>();
+        kv5.put(Cfg.KEY_ENABLED, "0");
+        eqFalse("off with default windows", Cfg.fromSource(kv5::get, sat).hasWork());
+
         if (failed == 0) System.out.println("OK: all core tests passed");
         else System.out.println("FAILED: " + failed);
         if (failed != 0) System.exit(1);

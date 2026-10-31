@@ -8,13 +8,23 @@ import java.util.Locale;
 /** 配置常量与纯算法：模块进程和设置界面共用（不依赖 Xposed API，任何进程都能加载）。 */
 public final class Cfg {
 
+    /** 模块自己那套 SharedPreferences 的文件名（hook 端用 XSharedPreferences 或 provider 读） */
+    public static final String PREFS_NAME = "stfix";
+    /** 本模块包名：XSharedPreferences 用它定位模块自己的数据目录 */
+    public static final String PKG = "com.eta.lab.screentime";
+    /** 配置 provider（XSharedPreferences 读不到时的退路），见 AndroidManifest 的 <provider> */
+    public static final String PROVIDER_AUTHORITY = "com.eta.lab.screentime.config";
+    /** 配置写入戳：只要模块存过一次配置就有，用来判断「新通道里到底有没有数据」 */
+    public static final String KEY_VER = "stfix_ver";
+    /** 老用户迁移标记（Settings.Global → 本机 SharedPreferences，只做一次） */
+    public static final String KEY_MIGRATED = "stfix_migrated";
+
     public static final String KEY_ENABLED = "stfix_enabled";
     public static final String KEY_WINDOWS = "stfix_windows";
     public static final String KEY_START_OLD = "stfix_start";
     public static final String KEY_END_OLD = "stfix_end";
-    public static final String KEY_HOOK_AT = "stfix_hook_at";
-    public static final String KEY_HOOK_MSG = "stfix_hook_msg";
     public static final String DEFAULT_WINDOWS = "30-420";
+    public static final String DEFAULT_WEEKDAYS = "1,2,3,4,5";
     /** 要单独隐藏的 App 包名列表，逗号分隔 */
     public static final String KEY_HIDE_APPS = "stfix_hide_apps";
 
@@ -24,8 +34,6 @@ public final class Cfg {
     public static final String KEY_WEEKDAYS = "stfix_weekdays";
     /** 一次性日期："2026-10-31"，非空时只有那天才生效 */
     public static final String KEY_TODAY = "stfix_today";
-    /** 模块自己写的「这次因为不在生效范围而跳过」的时间戳，给设置界面显示 */
-    public static final String KEY_SKIP_AT = "stfix_skip_at";
     /** 每日总时长上限（分钟，0 = 不限） */
     public static final String KEY_CAP = "stfix_cap";
     /** 时间段抖动（0-5 分钟） */
@@ -214,6 +222,96 @@ public final class Cfg {
             out.add(new int[]{s, e});
         }
         return out;
+    }
+
+    // ==================== 配置读取（纯函数，CoreTest 覆盖） ====================
+
+    /**
+     * 配置来源：key → 原始字符串，没有就返回 null。
+     * 模块端（SharedPreferences / ContentProvider）与 hook 端（XSharedPreferences / provider）共用同一套解析。
+     */
+    public interface Reader {
+        String get(String key);
+    }
+
+    /** 一份解析好的配置快照（hook 端直接吃这个）。 */
+    public static final class Snapshot {
+        public boolean enabled = true;
+        public List<int[]> windows = new ArrayList<>();
+        public List<String> hideApps = new ArrayList<>();
+        public String scope = SCOPE_ALL;
+        public String weekdays = DEFAULT_WEEKDAYS;
+        public String today = "";
+        public int cap = 0;
+        public int jitter = 0;
+
+        /** 有没有「要干活」的内容：没开、或什么都没有就不动数据。 */
+        public boolean hasWork() {
+            return enabled && (!windows.isEmpty() || !hideApps.isEmpty() || cap > 0);
+        }
+    }
+
+    /** 只有明确的 0/false/off 才算关；null/空/垃圾值走 fallback。 */
+    public static boolean parseBool(String raw, boolean fallback) {
+        if (raw == null) return fallback;
+        String s = raw.trim();
+        if (s.isEmpty()) return fallback;
+        if ("0".equals(s) || "false".equalsIgnoreCase(s) || "off".equalsIgnoreCase(s)) return false;
+        return true;
+    }
+
+    public static int parseInt(String raw, int fallback) {
+        if (raw == null) return fallback;
+        String s = raw.trim();
+        if (s.isEmpty()) return fallback;
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    /** 老版本把窗口存成两个 int（stfix_start/stfix_end），新键存成字符串；没设过就回退老键。 */
+    public static String windowsFromLegacy(String raw, int startOld, int endOld) {
+        if (raw != null) return raw;
+        return startOld + "-" + endOld;
+    }
+
+    /**
+     * 该不该从 Settings.Global 搬一次老配置：
+     * 新通道里一条配置都没有、而且还没搬过 → 搬（一次性，避免升级后配置丢失）。
+     */
+    public static boolean shouldMigrate(boolean migrated, boolean newStoreHasValues) {
+        return !migrated && !newStoreHasValues;
+    }
+
+    /** 一组键里有没有真正的配置（KEY_VER / KEY_MIGRATED 这类标记不算）。 */
+    public static boolean hasConfigValues(java.util.Collection<String> keys) {
+        if (keys == null || keys.isEmpty()) return false;
+        return keys.contains(KEY_ENABLED) || keys.contains(KEY_WINDOWS) || keys.contains(KEY_HIDE_APPS)
+                || keys.contains(KEY_SCOPE) || keys.contains(KEY_TODAY) || keys.contains(KEY_CAP)
+                || keys.contains(KEY_JITTER) || keys.contains(KEY_WEEKDAYS);
+    }
+
+    /** 把配置源解析成快照：窗口按「当天日期 + 序号」做抖动，其余按默认值兜底。 */
+    public static Snapshot fromSource(Reader r, Calendar now) {
+        Snapshot s = new Snapshot();
+        if (r == null) return s;
+        s.enabled = parseBool(r.get(KEY_ENABLED), true);
+        String raw = windowsFromLegacy(r.get(KEY_WINDOWS),
+                parseInt(r.get(KEY_START_OLD), 30), parseInt(r.get(KEY_END_OLD), 420));
+        s.jitter = clampJitter(parseInt(r.get(KEY_JITTER), 0));
+        s.windows = jitterWindows(parse(raw), s.jitter, now);
+        s.hideApps = parseApps(r.get(KEY_HIDE_APPS));
+        String scope = r.get(KEY_SCOPE);
+        s.scope = scope == null || scope.trim().isEmpty()
+                ? SCOPE_ALL : scope.trim().toLowerCase(Locale.ROOT);
+        String wd = r.get(KEY_WEEKDAYS);
+        s.weekdays = wd == null || wd.trim().isEmpty() ? DEFAULT_WEEKDAYS : wd.trim();
+        String today = r.get(KEY_TODAY);
+        s.today = today == null ? "" : today.trim();
+        s.cap = Math.max(0, Math.min(1440, parseInt(r.get(KEY_CAP), 0)));
+        return s;
     }
 
     // ==================== 解锁次数折减（纯函数，CoreTest 覆盖） ====================

@@ -2,7 +2,7 @@
 
 一个 LSPosed 模块：让「设置 → 屏幕使用时长」里，指定时间段的使用时长和解锁次数直接消失，也能单独抹掉某个 App 的全部记录。
 
-（前身叫「屏幕时长修正」，v2.0 起改名并重做界面；v2.1 加了「单独隐藏某个 App」；v3.0 加了生效范围、每日总时长上限和数字抖动。）
+（前身叫「屏幕时长修正」，v2.0 起改名并重做界面；v2.1 加了「单独隐藏某个 App」；v3.0 加了生效范围、每日总时长上限和数字抖动；v3.1 不再需要 WRITE_SECURE_SETTINGS，砍掉状态灯。）
 
 ## 它做什么
 
@@ -25,18 +25,26 @@ Redmi / HyperOS 3.0 / 设置 16.3.260227.00 / LSPosed(Vector)
 
 1. 安装 APK
 2. LSPosed 里启用模块，作用域**只勾「设置」**
-3. 授权写入：
-   ```
-   adb shell pm grant com.eta.lab.screentime android.permission.WRITE_SECURE_SETTINGS
-   ```
-   （有 root 也可以 `su -c pm grant ...`）
-4. 打开「我真没玩手机」，设好时间段 / 选好要隐藏的 App → 保存 → 退出「屏幕使用时长」再进一次
+3. 打开「我真没玩手机」，设好时间段 / 选好要隐藏的 App → 保存 → 退出「屏幕使用时长」再进一次
+
+**不需要任何 adb 授权**（v3.1 起）。配置存在模块自己的 SharedPreferences 里，hook 端走 Xposed 自有通道读，见下面「配置存哪儿」。
+
+## 配置存哪儿（v3.1）
+
+不再写 `Settings.Global`，也不再申请 `WRITE_SECURE_SETTINGS`：
+
+- 模块 App 把配置写进**自己的** SharedPreferences（文件名 `stfix`，`MODE_PRIVATE`），`commit()` 同步落盘；
+- hook 端（跑在「设置」进程里）按顺序读两条通道，**谁先读到数据就锁定谁**：
+  1. `de.robv.android.xposed.XSharedPreferences("com.eta.lab.screentime", "stfix")`，每次 `reload()`，改完保存立刻能读到新值；
+  2. 读不到就退到模块 App 里那个只读 ContentProvider（`content://com.eta.lab.screentime.config/conf`，`exported`、无自定义权限、只暴露 `query`），每次查询都是实时值。
+- 实测（Redmi / HyperOS 3 / LSPosed(Vector)）：**XSharedPreferences 在这个环境下读不到配置**（返回空），所以实际生效的是 provider 通道；xprefs 那条留着，换到能读的环境会自动用回去。判别看 logcat：`[ScreenTimeFix] cfg via=xprefs` 或 `cfg via=provider`。
+- **老用户升级**：第一次读配置时，如果新通道里一条配置都没有、而 `Settings.Global` 里还有 v3.0 的老值（读它不需要权限），会把这批老值一次性搬进来，配置不会丢。之后系统设置里的 `stfix_*` 就再也不会被读写。
 
 ## 使用
 
 - 时间段可多段、可跨零点（23:00 — 07:00 这种）
 - 「单独隐藏的 App」里点「＋ 选择要隐藏的应用」，搜索并选中；被隐藏的 App 按小时桶从总时长里扣掉，所以总数、排行、时间轴三者是自洽的
-- 顶部状态点：绿色=最近命中过；灰色=今天不在生效范围；红色=还没命中（确认作用域勾了「设置」，并打开一次时长页面）
+- 顶部状态卡只讲开关状态和「怎么才生效」，不再显示「几分钟前命中过 / 还没命中」这类命中回显（v3.1 砍掉状态灯，因为那需要往系统设置里写状态）
 - 改完保存后，退出统计页再进就生效，不用重启设置，也不用重启手机
 
 ### 生效范围（v3.0）
@@ -74,7 +82,7 @@ Redmi / HyperOS 3.0 / 设置 16.3.260227.00 / LSPosed(Vector)
 
 ## 已知问题
 
-- 系统升级后可能失效（页面照开，数字变回真的）。模块是按这版系统的内部结构找的入口；失效时会写 `stfix_hook_msg`，并尽量发一条系统通知（半小时最多一条，需要「设置」有通知权限）
+- 系统升级后可能失效（页面照开，数字变回真的）。模块是按这版系统的内部结构找的入口；失效时 hook 会尽量发一条系统通知（半小时最多一条，需要「设置」有通知权限）
 - 周/月视图拿不到「哪一天」，生效范围按今天判断（见上）
 
 ## 构建
@@ -89,7 +97,7 @@ sh build.sh
 
 `tools/CoreTest.java` 是纯算法用例（跨零点、多段并集、边界、生效范围判定、抖动定种、上限扣减），构建前会先跑一遍。
 
-当前版本 **v3.0**（versionCode 13）。
+当前版本 **v3.1**（versionCode 14）。
 
 ## 作者
 

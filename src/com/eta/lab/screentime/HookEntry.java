@@ -1,9 +1,7 @@
 package com.eta.lab.screentime;
 
-import android.content.ContentResolver;
 import android.content.Context;
 import android.os.Build;
-import android.provider.Settings;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -29,10 +27,10 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
  *   xa.g#b  → List<DeviceAppUsage>（使用时长；日/周/月共用，逐元素处理）
  *   id.c#x  → UnlockUsage（解锁次数）
  *
- * 配置（Settings.Global）：
+ * 配置（模块自己的 SharedPreferences，见 Channel；不用 Settings.Global，也不需要任何权限）：
  *   stfix_enabled = 1/0
  *   stfix_windows = "30-420,780-840"（当天第几分钟，多段，可跨零点）
- *   stfix_hook_at / stfix_hook_msg = 模块自己写的“上次命中时间/错误”，给设置界面显示
+ *   stfix_hook_at / stfix_hook_msg 已删除（v3.1 砍掉状态回显，不再写系统设置）
  *
  * 设计取舍（2026-10-31 实测后定的）：
  *   - 不解锁 → 只改时长；解锁 → 只改次数：两边独立，不会互相等；
@@ -56,10 +54,9 @@ public class HookEntry implements IXposedHookLoadPackage {
     private static volatile String sToday;
     private static volatile int sCapMinutes;
     private static volatile long sCfgAt;
-    private static volatile long sStatusAt;
-    private static volatile long sSkipAt;
     private static volatile long sNotifyAt;
     private static volatile int sApplyLog;
+    private static volatile int sCfgLog;
 
     private static final Map<Class<?>, Model> DEVICES = new ConcurrentHashMap<>();
     private static final Map<Class<?>, Model> APPS = new ConcurrentHashMap<>();
@@ -116,16 +113,14 @@ public class HookEntry implements IXposedHookLoadPackage {
                                 || (sWindows.isEmpty() && sHideApps.isEmpty() && sCapMinutes <= 0)) return;
                         // 生效范围：每次 apply 前判一次，不命中就原样返回
                         if (!Cfg.shouldApply(sScope, sWeekdays, sToday, java.util.Calendar.getInstance())) {
-                            publishSkip();
                             return;
                         }
 
                         Object out = isList ? trimUsageList((List<?>) r) : trimUnlockUsage(r);
                         if (out != r) param.setResult(out);
-                        publishStatus(true, "");
                     } catch (Throwable t) {
                         XposedBridge.log(TAG + "transform error: " + t);
-                        publishStatus(false, "transform: " + t);
+                        postAlert("transform: " + t);
                     }
                 }
             });
@@ -140,51 +135,42 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     static void loadConfig() {
         Context ctx = sCtx;
-        if (ctx == null) return;
         long now = System.currentTimeMillis();
         if (sLoaded && now - sCfgAt < 3000) return;
+        sCfgAt = now;
         try {
-            ContentResolver cr = ctx.getContentResolver();
-            boolean enabled = Settings.Global.getInt(cr, Cfg.KEY_ENABLED, 1) != 0;
-            String raw = Settings.Global.getString(cr, Cfg.KEY_WINDOWS);
-            // 只有“从没设置过”（null）才回退旧键；显式存成空串 = 用户清空了 = 不隐藏
-            if (raw == null) {
-                int st = Settings.Global.getInt(cr, Cfg.KEY_START_OLD, 30);
-                int en = Settings.Global.getInt(cr, Cfg.KEY_END_OLD, 420);
-                raw = st + "-" + en;
+            java.util.Map<String, String> m = Channel.read(ctx);
+            Cfg.Snapshot snap;
+            String via = Channel.usedName();
+            if (Cfg.hasConfigValues(m.keySet())) {
+                snap = Cfg.fromSource(m::get, java.util.Calendar.getInstance());
+            } else {
+                // 新通道里一条配置都没有（刚升级、还没打开过模块 App）→ 用 Settings.Global 里的老值兜底。
+                // 只读不写：等模块 App 打开一次，Store 会把老值搬进自己的 SharedPreferences。
+                snap = Cfg.fromSource(Store.readLegacy(ctx)::get, java.util.Calendar.getInstance());
+                via = via + "+legacy";
             }
-            List<int[]> wins = Cfg.parse(raw);
-            // 抖动：按「今天日期 + 窗口序号」定种，同一天内每次读到的窗口都一样
-            int jitter = Cfg.clampJitter(Settings.Global.getInt(cr, Cfg.KEY_JITTER, 0));
-            sWindows = Cfg.jitterWindows(wins, jitter, java.util.Calendar.getInstance());
-            sHideApps = Cfg.parseApps(Settings.Global.getString(cr, Cfg.KEY_HIDE_APPS));
-            sScope = Settings.Global.getString(cr, Cfg.KEY_SCOPE);
-            sWeekdays = Settings.Global.getString(cr, Cfg.KEY_WEEKDAYS);
-            sToday = Settings.Global.getString(cr, Cfg.KEY_TODAY);
-            sCapMinutes = Math.max(0, Settings.Global.getInt(cr, Cfg.KEY_CAP, 0));
-            sEnabled = enabled;
+            boolean changed = !sLoaded || snap.enabled != sEnabled || snap.cap != sCapMinutes
+                    || !Cfg.join(snap.windows).equals(Cfg.join(sWindows))
+                    || !Cfg.joinApps(snap.hideApps).equals(Cfg.joinApps(sHideApps));
+            sEnabled = snap.enabled;
+            sWindows = snap.windows;
+            sHideApps = snap.hideApps;
+            sScope = snap.scope;
+            sWeekdays = snap.weekdays;
+            sToday = snap.today;
+            sCapMinutes = snap.cap;
             sLoaded = true;
-            sCfgAt = now;
+            if (changed && sCfgLog < 40) {
+                sCfgLog++;
+                XposedBridge.log(TAG + "cfg via=" + via + " enabled=" + sEnabled
+                        + " windows=" + Cfg.join(sWindows) + " scope=" + sScope
+                        + " weekdays=" + sWeekdays + " today=" + sToday
+                        + " cap=" + sCapMinutes + " hide=" + Cfg.joinApps(sHideApps));
+            }
         } catch (Throwable t) {
-            sCfgAt = now;   // 读失败也退避，别每帧打日志
-            XposedBridge.log(TAG + "cfg error: " + t);
+            XposedBridge.log(TAG + "cfg error: " + t);   // sCfgAt 已占位，读失败也退避，别每帧刷日志
         }
-    }
-
-    /** 给设置界面看的“是否真的命中过”。成功 60s 一次、失败 10s 一次，别刷屏。 */
-    private static void publishStatus(boolean ok, String msg) {
-        Context ctx = sCtx;
-        if (ctx == null) return;
-        long now = System.currentTimeMillis();
-        if (now - sStatusAt < (ok ? 60_000L : 10_000L)) return;
-        sStatusAt = now;
-        try {
-            ContentResolver cr = ctx.getContentResolver();
-            Settings.Global.putLong(cr, Cfg.KEY_HOOK_AT, now);
-            Settings.Global.putString(cr, Cfg.KEY_HOOK_MSG, msg == null ? "" : msg);
-        } catch (Throwable ignored) {
-        }
-        if (!ok) postAlert(msg);
     }
 
     /** hook 出错时发一条系统通知（打在同在的「设置」进程上；任何异常都吞掉，不影响主流程）。 */
@@ -215,19 +201,6 @@ public class HookEntry implements IXposedHookLoadPackage {
             nm.notify(0x5f1c, b.build());
         } catch (Throwable t) {
             XposedBridge.log(TAG + "notify failed: " + t);
-        }
-    }
-
-    /** 今天不在生效范围：只记一个时间戳，30s 一次，界面据此显示「今天不生效」。 */
-    private static void publishSkip() {
-        Context ctx = sCtx;
-        if (ctx == null) return;
-        long now = System.currentTimeMillis();
-        if (now - sSkipAt < 30_000L) return;
-        sSkipAt = now;
-        try {
-            Settings.Global.putLong(ctx.getContentResolver(), Cfg.KEY_SKIP_AT, now);
-        } catch (Throwable ignored) {
         }
     }
 
