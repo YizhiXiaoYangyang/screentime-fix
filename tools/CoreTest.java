@@ -52,8 +52,175 @@ public class CoreTest {
         // 边界：起止相同 = 不隐藏
         eq("zero window", 0, Cfg.coveredMinutes(w(600, 600), 600, 660));
 
+        // ---------- 生效范围 shouldApply ----------
+        java.util.Calendar sat = cal(2026, 10, 31);   // 2026-10-31 是周六
+        java.util.Calendar mon = cal(2026, 11, 2);    // 2026-11-02 是周一
+        java.util.Calendar sun = cal(2026, 11, 1);    // 2026-11-01 是周日
+
+        eq("ymd", 10, Cfg.ymd(sat).length());
+        eqTrue("ymd value", "2026-10-31".equals(Cfg.ymd(sat)));
+
+        eqTrue("scope all sat", Cfg.shouldApply("all", "", "", sat));
+        eqTrue("scope null -> all", Cfg.shouldApply(null, "", "", sat));
+        eqTrue("scope empty -> all", Cfg.shouldApply("", "", "", sat));
+        eqTrue("scope unknown -> all", Cfg.shouldApply("随便", "", "", sat));
+
+        eqTrue("weekday mon", Cfg.shouldApply("weekday", "", "", mon));
+        eqFalse("weekday sat", Cfg.shouldApply("weekday", "", "", sat));
+        eqTrue("weekend sat", Cfg.shouldApply("weekend", "", "", sat));
+        eqTrue("weekend sun", Cfg.shouldApply("weekend", "", "", sun));
+        eqFalse("weekend mon", Cfg.shouldApply("weekend", "", "", mon));
+
+        eqTrue("custom mon in 1,3,5", Cfg.shouldApply("custom", "1,3,5", "", mon));
+        eqFalse("custom sat not in 1,3,5", Cfg.shouldApply("custom", "1,3,5", "", sat));
+        eqTrue("custom sat in 6", Cfg.shouldApply("custom", "6", "", sat));
+        eqTrue("custom sun in 7", Cfg.shouldApply("custom", "7", "", sun));
+        eqFalse("custom empty", Cfg.shouldApply("custom", "", "", mon));
+        eqFalse("custom junk", Cfg.shouldApply("custom", "abc,9,0", "", mon));
+
+        // 一次性日期
+        eqTrue("today match", Cfg.shouldApply("all", "", "2026-10-31", sat));
+        eqFalse("today past", Cfg.shouldApply("all", "", "2026-10-30", sat));
+        eqFalse("today future", Cfg.shouldApply("all", "", "2026-11-01", sat));
+        eqTrue("today blank ignored", Cfg.shouldApply("weekday", "", "  ", mon));
+        // 两条规则同时成立才放行（AND）：周六 + 只允许工作日 = 不生效
+        eqFalse("today match but weekday sat", Cfg.shouldApply("weekday", "", "2026-10-31", sat));
+
+        // parseWeekdays
+        boolean[] wd = Cfg.parseWeekdays("1,  5 ,7");
+        eq("wd size", 8, wd.length);
+        eqTrue("wd 1", wd[1]);
+        eqTrue("wd 5", wd[5]);
+        eqTrue("wd 7", wd[7]);
+        eqFalse("wd 2", wd[2]);
+
+        // ---------- 数字抖动 ----------
+        List<int[]> base = Cfg.parse("30-420");
+        eqTrue("jitter 0 keeps list", Cfg.jitterWindows(base, 0, sat) == base);
+        eq("clamp high", 5, Cfg.clampJitter(9));
+        eq("clamp low", 0, Cfg.clampJitter(-3));
+        eq("clamp mid", 3, Cfg.clampJitter(3));
+
+        List<int[]> j1 = Cfg.jitterWindows(base, 3, sat);
+        List<int[]> j2 = Cfg.jitterWindows(base, 3, cal(2026, 10, 31));
+        eq("jitter stable start", j1.get(0)[0], j2.get(0)[0]);
+        eq("jitter stable end", j1.get(0)[1], j2.get(0)[1]);
+        // 每个端点偏移不超过 ±jitter
+        int ds = Cfg.mod1440(j1.get(0)[0] - 30);
+        int de = Cfg.mod1440(j1.get(0)[1] - 420);
+        eqTrue("jitter start in range", ds <= 3 || ds >= 1437);
+        eqTrue("jitter end in range", de <= 3 || de >= 1437);
+
+        // 30 天里应该出现不同结果（不是恒定偏移）
+        int distinct = 0;
+        int firstStart = Cfg.jitterWindows(base, 3, cal(2026, 10, 1)).get(0)[0];
+        for (int d = 2; d <= 30; d++) {
+            if (Cfg.jitterWindows(base, 3, cal(2026, 10, d)).get(0)[0] != firstStart) distinct++;
+        }
+        eqTrue("jitter varies across days", distinct > 0);
+
+        // 多段窗口各自种子不同 + 跨零点仍然合法
+        List<int[]> multi = Cfg.jitterWindows(Cfg.parse("1380-420,780-840"), 2, sat);
+        eq("jitter multi size", 2, multi.size());
+        eqTrue("jitter multi not degenerate", multi.get(0)[0] != multi.get(0)[1]);
+
+        // ---------- 每日总时长上限 capBuckets ----------
+        long[] b = {600_000L, 300_000L, 120_000L};
+        long[] c1 = Cfg.capBuckets(b, 900_000L);
+        eq("cap keeps sum", 900_000L, c1[0] + c1[1] + c1[2]);
+        // 缺口 120000 全从最活跃的 600000 桶里扣 → 480000，其余不动
+        eq("cap cuts most active", 480_000L, c1[0]);
+        eq("cap small untouched", 120_000L, c1[2]);
+
+        // 从最活跃的开始扣：600 先被扣，而不是最小的那个
+        long[] b2 = {120_000L, 600_000L, 300_000L};
+        long[] c2 = Cfg.capBuckets(b2, 600_000L);
+        eq("cap sum 2", 600_000L, c2[0] + c2[1] + c2[2]);
+        eq("cap biggest cut first", 180_000L, c2[1]);
+        eq("cap small untouched", 120_000L, c2[0]);
+        eq("cap mid untouched", 300_000L, c2[2]);
+
+        // 上限为 0 = 全清；上限高于总和 = 原样返回
+        long[] c3 = Cfg.capBuckets(b, 0L);
+        eq("cap zero all", 0L, c3[0] + c3[1] + c3[2]);
+        eqTrue("cap above sum same ref", Cfg.capBuckets(b, 10_000_000L) == b);
+        eqTrue("cap empty", Cfg.capBuckets(new long[0], 0L).length == 0);
+        // 原数组不被改
+        eq("cap no mutation", 1_020_000L, b[0] + b[1] + b[2]);
+
+        // ---------- 解锁次数折减（周/月视图 + 上期） ----------
+        // 覆盖比例
+        eq("cover/day full", 1440, Cfg.coveredMinutesPerDay(Cfg.parse("0-1440")));
+        eq("cover/day 30-420", 390, Cfg.coveredMinutesPerDay(Cfg.parse("30-420")));
+        eq("cover/day none", 0, Cfg.coveredMinutesPerDay(Cfg.parse("")));
+        eqTrue("ratio full = 1", Math.abs(Cfg.coverageRatio(Cfg.parse("0-1440")) - 1.0) < 1e-9);
+        eqTrue("ratio 30-420", Math.abs(Cfg.coverageRatio(Cfg.parse("30-420")) - 390 / 1440.0) < 1e-9);
+
+        // 24 元素（日视图的小时桶形状）
+        eqTrue("isHourly 24", Cfg.isHourlyBuckets(24));
+        eqTrue("isHourly 168", Cfg.isHourlyBuckets(168));
+        eqFalse("isHourly 7", Cfg.isHourlyBuckets(7));
+        eqFalse("isHourly 30", Cfg.isHourlyBuckets(30));
+        eqFalse("isHourly 0", Cfg.isHourlyBuckets(0));
+
+        int[] h24 = new int[24];
+        for (int i = 0; i < 24; i++) h24[i] = i;
+        int[] c24 = Cfg.scaleByCoverage(h24, Cfg.coverageRatio(Cfg.parse("30-420")));
+        eq("scaleBy 24 len", 24, c24.length);
+        eq("scaleBy 24 sum", 276 - (int) Math.round(276 * 390 / 1440.0), Cfg.sumInts(c24));
+
+        // 7 元素（周视图：每天一个数），全窗口覆盖 → 全 0
+        int[] w7 = {40, 45, 50, 42, 48, 46, 45};
+        int[] z7 = Cfg.scaleByCoverage(w7, 1.0);
+        eq("scale 7 full zero", 0, Cfg.sumInts(z7));
+        eq("scale 7 full len", 7, z7.length);
+
+        // 30 元素（月视图）
+        int[] m30 = new int[30];
+        for (int i = 0; i < 30; i++) m30[i] = 30;
+        int[] s30 = Cfg.scaleByCoverage(m30, 0.5);
+        eq("scale 30 half", 450, Cfg.sumInts(s30));
+        eq("scale 30 len", 30, s30.length);
+
+        // 空列表 / null
+        eq("scale empty", 0, Cfg.scaleByCoverage(new int[0], 0.5).length);
+        eq("scale null", 0, Cfg.scaleByCoverage(null, 0.5) == null ? 0 : 1);
+
+        // 不覆盖（比例 0）→ 原样同一引用
+        eqTrue("scale ratio0 same ref", Cfg.scaleByCoverage(w7, 0.0) == w7);
+
+        // 27.08% 覆盖：316 → 230（四舍五入）
+        eq("scale 316 @27%", 230, Cfg.scaleCount(316, 390 / 1440.0));
+        eq("scale 0 stays 0", 0, Cfg.scaleCount(0, 0.5));
+        eq("scale 1 @27% rounds up", 1, Cfg.scaleCount(1, 390 / 1440.0));
+        eq("scale full -> 0", 0, Cfg.scaleCount(316, 1.0));
+        eq("scale ratio0 keeps", 316, Cfg.scaleCount(316, 0.0));
+
+        // 上期折减比例：日视图用「当期实际被扣掉的比例」
+        eqTrue("eff 29->26", Math.abs(Cfg.effectiveRatio(29, 26, 0.27) - 3 / 29.0) < 1e-9);
+        eqTrue("eff 34->25 fallback", Math.abs(Cfg.effectiveRatio(0, 0, 0.27) - 0.27) < 1e-9);
+        eq("eff nothing removed", 0, (long) (Cfg.effectiveRatio(10, 10, 0.5) * 1e6));
+        eq("eff after>before", 0, (long) (Cfg.effectiveRatio(5, 9, 0.5) * 1e6));
+        // 29 次里扣掉 3 次 → 上期 34 折成 30，差值 -4（真实 -5），不再翻成正数
+        eq("eff last 34", 30, Cfg.scaleCount(34, Cfg.effectiveRatio(29, 26, 0.27)));
+
         if (failed == 0) System.out.println("OK: all core tests passed");
         else System.out.println("FAILED: " + failed);
         if (failed != 0) System.exit(1);
+    }
+
+    private static void eqTrue(String name, boolean v) {
+        eq(name, 1, v ? 1 : 0);
+    }
+
+    private static void eqFalse(String name, boolean v) {
+        eq(name, 0, v ? 1 : 0);
+    }
+
+    private static java.util.Calendar cal(int y, int m, int d) {
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        c.clear();
+        c.set(y, m - 1, d, 12, 0, 0);
+        return c;
     }
 }

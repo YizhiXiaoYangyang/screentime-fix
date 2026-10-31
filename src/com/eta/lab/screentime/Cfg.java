@@ -1,7 +1,9 @@
 package com.eta.lab.screentime;
 
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.List;
+import java.util.Locale;
 
 /** 配置常量与纯算法：模块进程和设置界面共用（不依赖 Xposed API，任何进程都能加载）。 */
 public final class Cfg {
@@ -15,6 +17,24 @@ public final class Cfg {
     public static final String DEFAULT_WINDOWS = "30-420";
     /** 要单独隐藏的 App 包名列表，逗号分隔 */
     public static final String KEY_HIDE_APPS = "stfix_hide_apps";
+
+    /** 生效范围：all | weekday | weekend | custom */
+    public static final String KEY_SCOPE = "stfix_scope";
+    /** 自定义星期："1,2,3,4,5"（1=周一 … 7=周日），仅 custom 用 */
+    public static final String KEY_WEEKDAYS = "stfix_weekdays";
+    /** 一次性日期："2026-10-31"，非空时只有那天才生效 */
+    public static final String KEY_TODAY = "stfix_today";
+    /** 模块自己写的「这次因为不在生效范围而跳过」的时间戳，给设置界面显示 */
+    public static final String KEY_SKIP_AT = "stfix_skip_at";
+    /** 每日总时长上限（分钟，0 = 不限） */
+    public static final String KEY_CAP = "stfix_cap";
+    /** 时间段抖动（0-5 分钟） */
+    public static final String KEY_JITTER = "stfix_jitter";
+
+    public static final String SCOPE_ALL = "all";
+    public static final String SCOPE_WEEKDAY = "weekday";
+    public static final String SCOPE_WEEKEND = "weekend";
+    public static final String SCOPE_CUSTOM = "custom";
 
     private Cfg() {
     }
@@ -96,5 +116,211 @@ public final class Cfg {
     public static int windowMinutes(int[] w) {
         int d = w[1] - w[0];
         return d > 0 ? d : d + 1440;
+    }
+
+    // ==================== 生效范围（纯函数，CoreTest 覆盖） ====================
+
+    /** 当天的 yyyy-MM-dd。 */
+    public static String ymd(Calendar now) {
+        if (now == null) return "";
+        return String.format(Locale.ROOT, "%04d-%02d-%02d",
+                now.get(Calendar.YEAR), now.get(Calendar.MONTH) + 1,
+                now.get(Calendar.DAY_OF_MONTH));
+    }
+
+    /** "1,3,5" -> boolean[8]，下标 1..7 = 周一..周日；无效应答返回全 false。 */
+    public static boolean[] parseWeekdays(String raw) {
+        boolean[] on = new boolean[8];
+        if (raw == null) return on;
+        for (String part : raw.split(",")) {
+            String s = part.trim();
+            if (s.isEmpty()) continue;
+            try {
+                int d = Integer.parseInt(s);
+                if (d >= 1 && d <= 7) on[d] = true;
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return on;
+    }
+
+    /** Calendar.DAY_OF_WEEK（1=周日）换成 1..7（1=周一，7=周日）。 */
+    static int isoDow(int calendarDow) {
+        return calendarDow == Calendar.SUNDAY ? 7 : calendarDow - 1;
+    }
+
+    /**
+     * 今天该不该生效。
+     *
+     * 两条独立规则，都得放行才生效：
+     *   1) todayOverride 非空 → 只有「今天 == 它」才生效（一次性；过了就是整轮不生效，其他键不动）
+     *   2) scope：all / weekday / weekend / custom(weekdays)；空或未知值按 all
+     */
+    public static boolean shouldApply(String scope, String weekdays, String todayOverride, Calendar now) {
+        Calendar cal = now == null ? Calendar.getInstance() : now;
+        String one = todayOverride == null ? "" : todayOverride.trim();
+        if (!one.isEmpty() && !one.equals(ymd(cal))) return false;
+
+        String s = scope == null ? "" : scope.trim().toLowerCase(Locale.ROOT);
+        if (s.isEmpty() || SCOPE_ALL.equals(s)) return true;
+        int dow = isoDow(cal.get(Calendar.DAY_OF_WEEK));
+        if (SCOPE_WEEKDAY.equals(s)) return dow >= 1 && dow <= 5;
+        if (SCOPE_WEEKEND.equals(s)) return dow == 6 || dow == 7;
+        if (SCOPE_CUSTOM.equals(s)) return parseWeekdays(weekdays)[dow];
+        return true;
+    }
+
+    // ==================== 数字抖动（纯函数，CoreTest 覆盖） ====================
+
+    /** 抖动上限（分钟） */
+    public static final int MAX_JITTER = 5;
+
+    public static int clampJitter(int jitter) {
+        if (jitter < 0) return 0;
+        return Math.min(MAX_JITTER, jitter);
+    }
+
+    /** 归一到 0..1439，供抖动与测试共用。 */
+    public static int mod1440(int m) {
+        int r = m % 1440;
+        return r < 0 ? r + 1440 : r;
+    }
+
+    /** 稳定的伪随机偏移：同一天、同一窗口、同一端点永远一样。 */
+    static int jitterOffset(int day, int index, int salt, int jitter) {
+        if (jitter <= 0) return 0;
+        int span = jitter * 2 + 1;
+        int h = day * 73856093 ^ (index + 1) * 19349663 ^ salt * 83492791;
+        h ^= (h >>> 13);
+        h *= 0x5bd1e995;
+        h ^= (h >>> 15);
+        h &= 0x7fffffff;
+        return h % span - jitter;
+    }
+
+    /** 当天的窗口：起止各偏移 ±jitter 分钟（按日期+窗口序号定种，同一天内不变）。 */
+    public static List<int[]> jitterWindows(List<int[]> wins, int jitter, Calendar now) {
+        int j = clampJitter(jitter);
+        if (j == 0 || wins == null || wins.isEmpty()) return wins;
+        Calendar cal = now == null ? Calendar.getInstance() : now;
+        int day = cal.get(Calendar.YEAR) * 10000 + (cal.get(Calendar.MONTH) + 1) * 100
+                + cal.get(Calendar.DAY_OF_MONTH);
+        List<int[]> out = new ArrayList<>(wins.size());
+        for (int i = 0; i < wins.size(); i++) {
+            int[] w = wins.get(i);
+            int s = mod1440(w[0] + jitterOffset(day, i, 1, j));
+            int e = mod1440(w[1] + jitterOffset(day, i, 2, j));
+            if (s == e) e = mod1440(s + 1);
+            out.add(new int[]{s, e});
+        }
+        return out;
+    }
+
+    // ==================== 解锁次数折减（纯函数，CoreTest 覆盖） ====================
+
+    /** 一天里被窗口覆盖（也就是要隐藏）的分钟数，0..1440（并集，重叠段不重复计）。 */
+    public static long coveredMinutesPerDay(List<int[]> wins) {
+        if (wins == null || wins.isEmpty()) return 0L;
+        boolean[] mask = new boolean[1440];
+        for (int[] w : wins) {
+            int s = Math.max(0, Math.min(1440, w[0]));
+            int e = Math.max(0, Math.min(1440, w[1]));
+            if (s == e) continue;
+            if (s < e) {
+                markMask(mask, s, e);
+            } else {                 // 跨零点
+                markMask(mask, s, 1440);
+                markMask(mask, 0, e);
+            }
+        }
+        int n = 0;
+        for (boolean on : mask) if (on) n++;
+        return n;
+    }
+
+    private static void markMask(boolean[] mask, int from, int to) {
+        for (int i = Math.max(0, from); i < Math.min(1440, to); i++) mask[i] = true;
+    }
+
+    /** 覆盖比例 0..1 =一天里被隐藏的分钟占比。 */
+    public static double coverageRatio(List<int[]> wins) {
+        return coveredMinutesPerDay(wins) / 1440.0;
+    }
+
+    /** 元素个数能不能当小时桶用（24 的整数倍才算），否则当成「每天一个数」。 */
+    public static boolean isHourlyBuckets(int size) {
+        return size > 0 && size % 24 == 0;
+    }
+
+    /** 按比例折减单个计数（上期 lastCycle 用这个）。ratio<=0 原样，四舍五入。 */
+    public static int scaleCount(int value, double ratio) {
+        if (value <= 0) return Math.max(0, value);
+        if (ratio <= 0) return value;
+        if (ratio >= 1) return 0;
+        return (int) Math.round(value * (1.0 - ratio));
+    }
+
+    /**
+     * 按覆盖比例折减一组计数（周/月视图每天只有一个数，没法按小时精算）。
+     * ratio=1 → 全 0；ratio=0 → 原样返回同一引用（调用方据此判断「没变化」）。
+     */
+    public static int[] scaleByCoverage(int[] values, double ratio) {
+        if (values == null || values.length == 0) return values;
+        if (ratio <= 0) return values;
+        int[] out = new int[values.length];
+        for (int i = 0; i < values.length; i++) {
+            out[i] = scaleCount(Math.max(0, values[i]), ratio);
+        }
+        return out;
+    }
+
+    /** 数组求和（折减后重算 unlockTimes 用）。 */
+    public static int sumInts(int[] values) {
+        if (values == null) return 0;
+        int s = 0;
+        for (int v : values) s += v;
+        return s;
+    }
+
+    /**
+     * 日视图的「上期」折减比例：用当期实际被扣掉的比例（before→after），
+     * 而不是时间覆盖率——否则解锁都集中在窗口外时，当期只掉几次、上期却按 27% 大砍，
+     * 会出现「本期 9 次 较昨日 -16 次」这种不自洽。before<=0 时回退到覆盖率。
+     */
+    public static double effectiveRatio(int before, int after, double fallback) {
+        int b = Math.max(before, after);
+        if (b <= 0) return fallback <= 0 ? 0 : fallback;
+        return (b - Math.max(0, after)) / (double) b;
+    }
+
+    // ==================== 每日总时长上限（纯函数，CoreTest 覆盖） ====================
+
+    /**
+     * 从最活跃的桶开始削，直到总和 <= cap；cap 不小于总和时原样返回（同一引用）。
+     * 逐个把最大值扣到 0 再找下一个，保证扣掉的量正好等于缺口。
+     */
+    public static long[] capBuckets(long[] buckets, long cap) {
+        if (buckets == null || buckets.length == 0) return buckets;
+        long sum = 0;
+        for (long v : buckets) sum += Math.max(0L, v);
+        if (cap < 0) cap = 0;
+        if (cap >= sum) return buckets;
+        long[] out = buckets.clone();
+        long excess = sum - cap;
+        while (excess > 0) {
+            int idx = -1;
+            long best = 0;
+            for (int i = 0; i < out.length; i++) {
+                if (out[i] > best) {
+                    best = out[i];
+                    idx = i;
+                }
+            }
+            if (idx < 0) break;
+            long take = Math.min(best, excess);
+            out[idx] -= take;
+            excess -= take;
+        }
+        return out;
     }
 }

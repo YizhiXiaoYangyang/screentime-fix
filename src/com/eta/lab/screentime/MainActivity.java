@@ -39,6 +39,17 @@ public class MainActivity extends Activity {
     private final List<int[]> mWindows = new ArrayList<>();
     private final List<String> mHideApps = new ArrayList<>();
 
+    private String mScope = Cfg.SCOPE_ALL;
+    private String mWeekdays = "1,2,3,4,5";
+    private String mToday = "";
+    private int mCap = 0;
+    private int mJitter = 0;
+
+    private TextView mScopeValue;
+    private TextView mTodayValue;
+    private TextView mCapValue;
+    private TextView mJitterValue;
+
     private LinearLayout mScrollBody;
     private LinearLayout mListCard;
     private LinearLayout mAppsRows;
@@ -225,6 +236,28 @@ public class MainActivity extends Activity {
 
         mScrollBody.addView(appsCard, cardLp());
 
+        // ---- 生效范围 / 上限 / 抖动 ----
+        Ui.Card ruleCard = new Ui.Card(this);
+        ruleCard.setPadding(Ui.dp(this, 18), Ui.dp(this, 14), Ui.dp(this, 16), Ui.dp(this, 6));
+
+        TextView ruleTitle = Ui.label(this, "生效范围", 15, Ui.text(this));
+        ruleTitle.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                android.graphics.Typeface.NORMAL));
+        ruleCard.addView(ruleTitle);
+
+        TextView ruleSub = Ui.label(this, "只在选定的日子隐藏，其余时间显示真实数据", 12, Ui.sub(this));
+        LinearLayout.LayoutParams rsLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rsLp.topMargin = Ui.dp(this, 4);
+        ruleCard.addView(ruleSub, rsLp);
+
+        mScopeValue = addSettingRow(ruleCard, "生效范围", this::pickScope);
+        mTodayValue = addSettingRow(ruleCard, "仅指定日期", this::pickToday);
+        mCapValue = addSettingRow(ruleCard, "每日上限", this::editCap);
+        mJitterValue = addSettingRow(ruleCard, "数字抖动", this::editJitter);
+
+        mScrollBody.addView(ruleCard, cardLp());
+
         // ---- 快速套用 ----
         TextView quickTitle = Ui.label(this, "快速套用", 12, Ui.sub(this));
         LinearLayout.LayoutParams qtLp = new LinearLayout.LayoutParams(
@@ -320,13 +353,29 @@ public class MainActivity extends Activity {
         osLp.topMargin = Ui.dp(this, 14);
         mScrollBody.addView(openStats, osLp);
 
-        TextView ver = Ui.label(this, "v2.1 · 作用域只勾「设置」", 11, Ui.sub(this));
+        TextView ver = Ui.label(this, "v3.0 · 作用域只勾「设置」", 11, Ui.sub(this));
         ver.setAlpha(0.75f);
         ver.setGravity(Gravity.CENTER_HORIZONTAL);
         LinearLayout.LayoutParams verLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         verLp.topMargin = Ui.dp(this, 18);
         mScrollBody.addView(ver, verLp);
+
+        TextView by = Ui.label(this, "by 羊羊羊_ · coolapk.com/u/3977579", 11, Ui.accent(this));
+        by.setAlpha(0.8f);
+        by.setGravity(Gravity.CENTER_HORIZONTAL);
+        by.setOnClickListener(v -> {
+            try {
+                startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse("https://www.coolapk.com/u/3977579")));
+            } catch (Throwable t) {
+                toast("没有能打开这个链接的应用");
+            }
+        });
+        LinearLayout.LayoutParams byLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        byLp.topMargin = Ui.dp(this, 6);
+        mScrollBody.addView(by, byLp);
 
         root.addView(mScroll, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -419,15 +468,27 @@ public class MainActivity extends Activity {
         String hideRaw = Settings.Global.getString(cr, Cfg.KEY_HIDE_APPS);
         mHideApps.clear();
         mHideApps.addAll(Cfg.parseApps(hideRaw));
+
+        String scope = Settings.Global.getString(cr, Cfg.KEY_SCOPE);
+        mScope = scope == null || scope.trim().isEmpty() ? Cfg.SCOPE_ALL : scope.trim();
+        String weekdays = Settings.Global.getString(cr, Cfg.KEY_WEEKDAYS);
+        mWeekdays = weekdays == null || weekdays.trim().isEmpty() ? "1,2,3,4,5" : weekdays.trim();
+        String today = Settings.Global.getString(cr, Cfg.KEY_TODAY);
+        mToday = today == null ? "" : today.trim();
+        mCap = Math.max(0, Settings.Global.getInt(cr, Cfg.KEY_CAP, 0));
+        mJitter = Cfg.clampJitter(Settings.Global.getInt(cr, Cfg.KEY_JITTER, 0));
+
         mSwitch.setChecked(enabled);
         mSwitch.setOnChange(this::refreshStatus);
         rebuildList();
         rebuildAppsList();
+        refreshScopeRows();
         refreshStatus();
     }
 
     private void refreshStatus() {
         long at = Settings.Global.getLong(getContentResolver(), Cfg.KEY_HOOK_AT, 0L);
+        long skipAt = Settings.Global.getLong(getContentResolver(), Cfg.KEY_SKIP_AT, 0L);
         String msg = Settings.Global.getString(getContentResolver(), Cfg.KEY_HOOK_MSG);
         long age = System.currentTimeMillis() - at;
         boolean on = mSwitch.isChecked();
@@ -442,6 +503,12 @@ public class MainActivity extends Activity {
             mStatusTitle.setText("已关闭");
             mStatusTitle.setTextColor(Ui.text(this));
             mStatusSub.setText("统计会显示真实数据");
+        } else if (skipAt > at && System.currentTimeMillis() - skipAt < 10 * 60_000L) {
+            mDot.setColor(0xFF8E8E93, false);
+            mStatusTitle.setText("今天不生效");
+            mStatusTitle.setTextColor(Ui.text(this));
+            mStatusSub.setText("生效范围：" + scopeText()
+                    + (mToday == null || mToday.isEmpty() ? "" : " · 只限 " + mToday));
         } else if (at > 0 && age < 10 * 60_000L) {
             mDot.setColor(COLOR_OK, true);
             mStatusTitle.setText("保护中");
@@ -778,6 +845,184 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ==================== 生效范围 / 上限 / 抖动 ====================
+
+    private TextView addSettingRow(Ui.Card card, String name, Runnable onClick) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, Ui.dp(this, 13), 0, Ui.dp(this, 13));
+
+        TextView label = Ui.label(this, name, 14, Ui.text(this));
+        row.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView value = Ui.label(this, "", 13, Ui.sub(this));
+        value.setGravity(Gravity.END);
+        row.addView(value, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView arrow = Ui.label(this, "›", 17, Ui.sub(this));
+        arrow.setAlpha(0.6f);
+        LinearLayout.LayoutParams aLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        aLp.leftMargin = Ui.dp(this, 8);
+        row.addView(arrow, aLp);
+
+        row.setOnClickListener(v -> onClick.run());
+        card.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return value;
+    }
+
+    private void refreshScopeRows() {
+        if (mScopeValue == null) return;
+        mScopeValue.setText(scopeText());
+        mTodayValue.setText(mToday == null || mToday.isEmpty() ? "不限制" : mToday);
+        mCapValue.setText(mCap <= 0 ? "不限" : durText(mCap));
+        mJitterValue.setText(mJitter <= 0 ? "关闭" : "±" + mJitter + " 分钟");
+    }
+
+    private String scopeText() {
+        String s = mScope == null ? "" : mScope;
+        if (Cfg.SCOPE_WEEKDAY.equals(s)) return "仅工作日";
+        if (Cfg.SCOPE_WEEKEND.equals(s)) return "仅周末";
+        if (Cfg.SCOPE_CUSTOM.equals(s)) {
+            boolean[] on = Cfg.parseWeekdays(mWeekdays);
+            String[] names = {"一", "二", "三", "四", "五", "六", "日"};
+            StringBuilder sb = new StringBuilder();
+            for (int i = 1; i <= 7; i++) {
+                if (!on[i]) continue;
+                if (sb.length() > 0) sb.append(' ');
+                sb.append(names[i - 1]);
+            }
+            return sb.length() == 0 ? "自定义（未选）" : "周" + sb;
+        }
+        return "每天";
+    }
+
+    private int dlgTheme() {
+        return Ui.night(this)
+                ? android.R.style.Theme_DeviceDefault_Dialog_Alert
+                : android.R.style.Theme_DeviceDefault_Light_Dialog_Alert;
+    }
+
+    private void pickScope() {
+        final String[] labels = {"每天（不限）", "仅工作日（周一至周五）", "仅周末（周六、周日）", "自定义星期"};
+        final String[] values = {Cfg.SCOPE_ALL, Cfg.SCOPE_WEEKDAY, Cfg.SCOPE_WEEKEND, Cfg.SCOPE_CUSTOM};
+        int cur = 0;
+        for (int i = 0; i < values.length; i++) {
+            if (values[i].equals(mScope)) cur = i;
+        }
+        new AlertDialog.Builder(this, dlgTheme())
+                .setTitle("生效范围")
+                .setSingleChoiceItems(labels, cur, (d, which) -> {
+                    mScope = values[which];
+                    refreshScopeRows();
+                    d.dismiss();
+                    if (Cfg.SCOPE_CUSTOM.equals(mScope)) pickWeekdays();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void pickWeekdays() {
+        final boolean[] on = Cfg.parseWeekdays(mWeekdays);
+        final String[] labels = {"周一", "周二", "周三", "周四", "周五", "周六", "周日"};
+        final boolean[] checked = new boolean[7];
+        for (int i = 0; i < 7; i++) checked[i] = on[i + 1];
+        new AlertDialog.Builder(this, dlgTheme())
+                .setTitle("自定义星期")
+                .setMultiChoiceItems(labels, checked, (d, which, isChecked) -> checked[which] = isChecked)
+                .setPositiveButton("确定", (d, w) -> {
+                    StringBuilder sb = new StringBuilder();
+                    for (int i = 0; i < 7; i++) {
+                        if (!checked[i]) continue;
+                        if (sb.length() > 0) sb.append(',');
+                        sb.append(i + 1);
+                    }
+                    mWeekdays = sb.toString();
+                    refreshScopeRows();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void pickToday() {
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        try {
+            if (mToday != null && mToday.length() == 10) {
+                c.set(Integer.parseInt(mToday.substring(0, 4)),
+                        Integer.parseInt(mToday.substring(5, 7)) - 1,
+                        Integer.parseInt(mToday.substring(8, 10)));
+            }
+        } catch (Throwable ignored) {
+        }
+        android.app.DatePickerDialog dlg = new android.app.DatePickerDialog(this, (view, y, mo, d) -> {
+            mToday = String.format(Locale.ROOT, "%04d-%02d-%02d", y, mo + 1, d);
+            refreshScopeRows();
+            refreshStatus();
+        }, c.get(java.util.Calendar.YEAR), c.get(java.util.Calendar.MONTH),
+                c.get(java.util.Calendar.DAY_OF_MONTH));
+        dlg.setTitle("只在这一天生效");
+        dlg.setButton(android.content.DialogInterface.BUTTON_POSITIVE, "确定", dlg);
+        dlg.setButton(android.content.DialogInterface.BUTTON_NEGATIVE, "清除", (d, w) -> {
+            mToday = "";
+            refreshScopeRows();
+            refreshStatus();
+        });
+        dlg.show();
+    }
+
+    private void editCap() {
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        input.setText(String.valueOf(mCap));
+        input.setSelection(input.getText().length());
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(Ui.dp(this, 22), Ui.dp(this, 6), Ui.dp(this, 22), 0);
+        box.addView(input);
+        TextView hint = Ui.label(this,
+                "分钟，0 表示不限。裁完时间段后如果还超上限，从最活跃的小时开始往下扣，排行榜跟着一起缩。",
+                12, Ui.sub(this));
+        hint.setLineSpacing(Ui.dp(this, 3), 1f);
+        LinearLayout.LayoutParams hLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hLp.topMargin = Ui.dp(this, 6);
+        box.addView(hint, hLp);
+
+        new AlertDialog.Builder(this, dlgTheme())
+                .setTitle("每日总时长上限")
+                .setView(box)
+                .setPositiveButton("确定", (d, w) -> {
+                    try {
+                        mCap = Math.max(0, Math.min(1440,
+                                Integer.parseInt(input.getText().toString().trim())));
+                    } catch (Throwable t) {
+                        toast("填数字（分钟），0 = 不限");
+                        return;
+                    }
+                    refreshScopeRows();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void editJitter() {
+        final String[] labels = {"关闭", "±1 分钟", "±2 分钟", "±3 分钟", "±4 分钟", "±5 分钟"};
+        new AlertDialog.Builder(this, dlgTheme())
+                .setTitle("数字抖动")
+                .setSingleChoiceItems(labels, Cfg.clampJitter(mJitter), (d, which) -> {
+                    mJitter = which;
+                    refreshScopeRows();
+                    d.dismiss();
+                })
+                .setMessage("每段窗口的起止各偏一点，同一天内固定不变；避免每天分秒都一样。")
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
     // ==================== 保存 ====================
 
     private void save() {
@@ -807,6 +1052,11 @@ public class MainActivity extends Activity {
             Settings.Global.putInt(cr, Cfg.KEY_ENABLED, mSwitch.isChecked() ? 1 : 0);
             Settings.Global.putString(cr, Cfg.KEY_WINDOWS, Cfg.join(mWindows));
             Settings.Global.putString(cr, Cfg.KEY_HIDE_APPS, Cfg.joinApps(mHideApps));
+            Settings.Global.putString(cr, Cfg.KEY_SCOPE, mScope);
+            Settings.Global.putString(cr, Cfg.KEY_WEEKDAYS, mWeekdays);
+            Settings.Global.putString(cr, Cfg.KEY_TODAY, mToday);
+            Settings.Global.putInt(cr, Cfg.KEY_CAP, mCap);
+            Settings.Global.putInt(cr, Cfg.KEY_JITTER, Cfg.clampJitter(mJitter));
             String desc = mWindows.isEmpty() ? "没有时间段，等于不隐藏"
                     : (!mSwitch.isChecked() ? "已关闭" : Cfg.join(mWindows));
             toast("已保存：" + desc);

@@ -2,6 +2,7 @@ package com.eta.lab.screentime;
 
 import android.content.ContentResolver;
 import android.content.Context;
+import android.os.Build;
 import android.provider.Settings;
 
 import java.lang.reflect.Constructor;
@@ -50,8 +51,14 @@ public class HookEntry implements IXposedHookLoadPackage {
     private static volatile boolean sEnabled;
     private static volatile List<int[]> sWindows = Collections.emptyList();
     private static volatile List<String> sHideApps = Collections.emptyList();
+    private static volatile String sScope;
+    private static volatile String sWeekdays;
+    private static volatile String sToday;
+    private static volatile int sCapMinutes;
     private static volatile long sCfgAt;
     private static volatile long sStatusAt;
+    private static volatile long sSkipAt;
+    private static volatile long sNotifyAt;
     private static volatile int sApplyLog;
 
     private static final Map<Class<?>, Model> DEVICES = new ConcurrentHashMap<>();
@@ -106,7 +113,12 @@ public class HookEntry implements IXposedHookLoadPackage {
 
                         loadConfig();
                         if (!sLoaded || !sEnabled
-                                || (sWindows.isEmpty() && sHideApps.isEmpty())) return;
+                                || (sWindows.isEmpty() && sHideApps.isEmpty() && sCapMinutes <= 0)) return;
+                        // 生效范围：每次 apply 前判一次，不命中就原样返回
+                        if (!Cfg.shouldApply(sScope, sWeekdays, sToday, java.util.Calendar.getInstance())) {
+                            publishSkip();
+                            return;
+                        }
 
                         Object out = isList ? trimUsageList((List<?>) r) : trimUnlockUsage(r);
                         if (out != r) param.setResult(out);
@@ -142,8 +154,14 @@ public class HookEntry implements IXposedHookLoadPackage {
                 raw = st + "-" + en;
             }
             List<int[]> wins = Cfg.parse(raw);
-            sWindows = wins;
+            // 抖动：按「今天日期 + 窗口序号」定种，同一天内每次读到的窗口都一样
+            int jitter = Cfg.clampJitter(Settings.Global.getInt(cr, Cfg.KEY_JITTER, 0));
+            sWindows = Cfg.jitterWindows(wins, jitter, java.util.Calendar.getInstance());
             sHideApps = Cfg.parseApps(Settings.Global.getString(cr, Cfg.KEY_HIDE_APPS));
+            sScope = Settings.Global.getString(cr, Cfg.KEY_SCOPE);
+            sWeekdays = Settings.Global.getString(cr, Cfg.KEY_WEEKDAYS);
+            sToday = Settings.Global.getString(cr, Cfg.KEY_TODAY);
+            sCapMinutes = Math.max(0, Settings.Global.getInt(cr, Cfg.KEY_CAP, 0));
             sEnabled = enabled;
             sLoaded = true;
             sCfgAt = now;
@@ -164,6 +182,51 @@ public class HookEntry implements IXposedHookLoadPackage {
             ContentResolver cr = ctx.getContentResolver();
             Settings.Global.putLong(cr, Cfg.KEY_HOOK_AT, now);
             Settings.Global.putString(cr, Cfg.KEY_HOOK_MSG, msg == null ? "" : msg);
+        } catch (Throwable ignored) {
+        }
+        if (!ok) postAlert(msg);
+    }
+
+    /** hook 出错时发一条系统通知（打在同在的「设置」进程上；任何异常都吞掉，不影响主流程）。 */
+    private static void postAlert(String msg) {
+        Context ctx = sCtx;
+        if (ctx == null || msg == null || msg.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        if (now - sNotifyAt < 30 * 60_000L) return;   // 半小时最多一条，别刷诅咒
+        sNotifyAt = now;
+        try {
+            android.app.NotificationManager nm = (android.app.NotificationManager)
+                    ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            String ch = "stfix_alert";
+            if (Build.VERSION.SDK_INT >= 26) {
+                android.app.NotificationChannel c = new android.app.NotificationChannel(
+                        ch, "屏幕时长修正", android.app.NotificationManager.IMPORTANCE_DEFAULT);
+                c.setDescription("模块失效时提醒");
+                nm.createNotificationChannel(c);
+            }
+            android.app.Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                    ? new android.app.Notification.Builder(ctx, ch)
+                    : new android.app.Notification.Builder(ctx);
+            b.setContentTitle("屏幕时长修正可能失效了")
+                    .setContentText(msg.length() > 80 ? msg.substring(0, 80) : msg)
+                    .setSmallIcon(android.R.drawable.stat_notify_error)
+                    .setAutoCancel(true);
+            nm.notify(0x5f1c, b.build());
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "notify failed: " + t);
+        }
+    }
+
+    /** 今天不在生效范围：只记一个时间戳，30s 一次，界面据此显示「今天不生效」。 */
+    private static void publishSkip() {
+        Context ctx = sCtx;
+        if (ctx == null) return;
+        long now = System.currentTimeMillis();
+        if (now - sSkipAt < 30_000L) return;
+        sSkipAt = now;
+        try {
+            Settings.Global.putLong(ctx.getContentResolver(), Cfg.KEY_SKIP_AT, now);
         } catch (Throwable ignored) {
         }
     }
@@ -385,12 +448,137 @@ public class HookEntry implements IXposedHookLoadPackage {
             newDetail = after;
         }
         boolean detailChanged = detail != null && newDetail != detail;
-        if (removed == 0 && !detailChanged && appGone == 0) return du;
-
-        // detail 已经扣过就按 detail 的差值算，避免重复扣
         long cut = removed + (detailDeduct > 0 ? detailDeduct : appGone);
-        return m.devCtor.newInstance(Math.max(0L, total - cut), newDetail,
-                newApps == null ? apps : newApps, newCats == null ? cats : newCats, last);
+        long newTotal = Math.max(0L, total - cut);
+        Map<?, ?> outApps = newApps == null ? apps : newApps;
+        Map<?, ?> outCats = newCats == null ? cats : newCats;
+
+        // ---- 每日总时长上限：裁完时间段后如果仍超上限，从最活跃的小时桶开始扣 ----
+        long capMs = capMsFor(newDetail);
+        boolean capHit = false;
+        if (capMs > 0 && newTotal > capMs) {
+            double f = capMs / (double) newTotal;
+            newDetail = scaleDetail(newDetail, f);
+            outApps = scaleApps(outApps, f, capMs);
+            outCats = scaleCats(outCats, f, capMs);
+            newTotal = capMs;
+            capHit = true;
+        }
+
+        if (!capHit && removed == 0 && !detailChanged && appGone == 0) return du;
+        return m.devCtor.newInstance(newTotal, newDetail, outApps, outCats, last);
+    }
+
+    // ------------------------------------------------------------ 总时长上限
+
+    /** 上限（毫秒）：按 detail 的小时桶数推出「几天」，周/月视图按天 × 上限。 */
+    private static long capMsFor(List<?> detail) {
+        int cap = sCapMinutes;
+        if (cap <= 0) return 0L;
+        int days = (detail != null && !detail.isEmpty() && detail.size() % 24 == 0)
+                ? Math.max(1, detail.size() / 24) : 1;
+        return (long) cap * 60_000L * days;
+    }
+
+    /** 按比例 f 从最活跃的桶开始削，削完总和 ≈ 原和 × f。 */
+    private static List<?> scaleDetail(List<?> d, double f) {
+        if (d == null || d.isEmpty() || f >= 1.0) return d;
+        int n = d.size();
+        long[] buckets = new long[n];
+        long sum = 0;
+        for (int i = 0; i < n; i++) {
+            buckets[i] = asLong(d.get(i));
+            sum += buckets[i];
+        }
+        long[] capped = Cfg.capBuckets(buckets, (long) (sum * f));
+        boolean changed = false;
+        List<Object> out = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            out.add(capped[i]);
+            if (capped[i] != buckets[i]) changed = true;
+        }
+        return changed ? out : d;
+    }
+
+    /** 排行榜里每个 App 都按 f 缩，且不超过总时长（不能出现排行比总量还大）。 */
+    private static List<Object> scaleAppList(List<?> list, double f, long capMs) {
+        List<Object> out = new ArrayList<>(list.size());
+        for (Object app : list) {
+            long use = useTimeOf(app);
+            long nu = (long) (use * f);
+            if (capMs > 0 && nu > capMs) nu = capMs;
+            if (nu >= use) {
+                out.add(app);
+                continue;
+            }
+            try {
+                out.add(rebuildAppUsageCapped(app, nu, f));
+            } catch (Throwable t) {
+                out.add(app);
+            }
+        }
+        return out;
+    }
+
+    private static Map<?, ?> scaleApps(Map<?, ?> apps, double f, long capMs) {
+        if (apps == null || apps.isEmpty()) return apps;
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> en : apps.entrySet()) {
+            List<Object> one = scaleAppList(Collections.singletonList(en.getValue()), f, capMs);
+            out.put(String.valueOf(en.getKey()), one.get(0));
+        }
+        return out;
+    }
+
+    private static Map<?, ?> scaleCats(Map<?, ?> cats, double f, long capMs) {
+        if (cats == null || cats.isEmpty()) return cats;
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> en : cats.entrySet()) {
+            Object cat = en.getValue();
+            long use = catUseTimeOf(cat);
+            long nu = (long) (use * f);
+            if (capMs > 0 && nu > capMs) nu = capMs;
+            if (nu >= use) {
+                out.put(String.valueOf(en.getKey()), cat);
+                continue;
+            }
+            try {
+                out.put(String.valueOf(en.getKey()), rebuildCategoryCapped(cat, nu, f, capMs));
+            } catch (Throwable t) {
+                out.put(String.valueOf(en.getKey()), cat);
+            }
+        }
+        return out;
+    }
+
+    private static long catUseTimeOf(Object cat) {
+        try {
+            Model m = catModel(cat.getClass());
+            return m.useTime == null ? 0L : asLong(m.useTime.invoke(cat));
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    private static Object rebuildAppUsageCapped(Object app, long useTime, double f) throws Exception {
+        Model m = appModel(app.getClass());
+        if (m.appCtor == null) throw new NoSuchMethodException(app.getClass().getName());
+        return m.appCtor.newInstance((String) m.pkg.invoke(app), useTime,
+                (String) m.catId.invoke(app), (String) m.catType.invoke(app),
+                scaleDetail((List<?>) m.detail.invoke(app), f), asLong(m.last.invoke(app)));
+    }
+
+    private static Object rebuildCategoryCapped(Object cat, long useTime, double f, long capMs) throws Exception {
+        Model m = catModel(cat.getClass());
+        if (m.catCtor == null) throw new NoSuchMethodException(cat.getClass().getName());
+        Object inner = m.apps.invoke(cat);
+        Object innerOut = inner;
+        if (inner instanceof List && !((List<?>) inner).isEmpty()) {
+            innerOut = scaleAppList((List<?>) inner, f, capMs);
+        }
+        return m.catCtor.newInstance((String) m.catId.invoke(cat), (String) m.catType.invoke(cat),
+                useTime, scaleDetail((List<?>) m.detail.invoke(cat), f),
+                asLong(m.last.invoke(cat)), innerOut);
     }
 
     private static long removedUnits(Object item, List<int[]> wins) throws Exception {
@@ -478,11 +666,28 @@ public class HookEntry implements IXposedHookLoadPackage {
 
         List<?> unlocks = (List<?>) m.unlocks.invoke(usage);
         List<int[]> wins = sWindows;
-        if (unlocks == null || unlocks.isEmpty() || unlocks.size() % 24 != 0 || wins.isEmpty()) return usage;
+        if (unlocks == null || unlocks.isEmpty() || wins.isEmpty()) return usage;
 
         int times = asInt(m.unlockTimes.invoke(usage));
         int last = asInt(m.last.invoke(usage));
         long first = asLong(m.firstTime.invoke(usage));
+
+        // 上期（lastCycle）：只能按「一天被隐藏的占比」折减，日/周/月用同一个比例
+        double ratio = Cfg.coverageRatio(wins);
+
+        // 周/月视图：UnlockUsageKt.aggregate 后 unlocks 变成「每天一个数」（7 或 30 个元素），
+        // 没法按小时精算 → 按覆盖比例折减，并重算 unlockTimes
+        if (!Cfg.isHourlyBuckets(unlocks.size())) {
+            int[] vals = new int[unlocks.size()];
+            for (int i = 0; i < vals.length; i++) vals[i] = asInt(unlocks.get(i));
+            int[] scaled = Cfg.scaleByCoverage(vals, ratio);
+            if (scaled == vals) return usage;          // 比例 0 = 完全不覆盖，原样放行
+            int sum = Cfg.sumInts(scaled);
+            List<Integer> out = new ArrayList<>(scaled.length);
+            for (int v : scaled) out.add(v);
+            return m.unlockCtor.newInstance(sum, out, Cfg.scaleCount(last, ratio),
+                    sum == 0 ? 0L : first);
+        }
 
         List<Integer> out = new ArrayList<>(unlocks.size());
         int sum = 0;
@@ -521,7 +726,8 @@ public class HookEntry implements IXposedHookLoadPackage {
                 newFirst = cal.getTimeInMillis();
             }
         }
-        return m.unlockCtor.newInstance(sum, out, last, newFirst);
+        return m.unlockCtor.newInstance(sum, out,
+                Cfg.scaleCount(last, Cfg.effectiveRatio(times, sum, ratio)), newFirst);
     }
 
     private static boolean inAnyWindow(List<int[]> wins, long ts) {
