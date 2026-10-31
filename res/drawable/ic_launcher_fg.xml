@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- 手机轮廓 -->
+    <path android:pathData="M38,32 h32 a8,8 0 0 1 8,8 v28 a8,8 0 0 1 -8,8 h-32 a8,8 0 0 1 -8,-8 v-28 a8,8 0 0 1 8,-8 z"
+        android:strokeColor="#FFFFFF" android:strokeWidth="5" android:fillColor="#00000000" />
+    <!-- 月亮 -->
+    <path android:pathData="M74,26 a10,10 0 1 0 8,15 a8,8 0 1 1 -8,-15 z" android:fillColor="#FFD166" />
+    <!-- 斜杠 -->
+    <path android:pathData="M34,80 L74,28" android:strokeColor="#FF5A5F" android:strokeWidth="6"
+        android:strokeLineCap="round" android:fillColor="#00000000" />
+</vector>
