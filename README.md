@@ -52,6 +52,12 @@ sh build.sh
 
 `tools/CoreTest.java` 是纯算法用例（跨零点、多段并集、边界），构建前会先跑一遍。
 
+## 作者
+
+- 酷安：[@羊羊羊_](https://www.coolapk.com/u/3977579)
+- 项目：https://github.com/YizhiXiaoYangyang/screentime-fix
+
 ## 许可
 
-公有领域（Unlicense）。随便用、随便改、随便发，不用署名。
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/legalcode.zh-Hans)（知识共享 署名 4.0）。
+随便用、随便改、随便发、可商用，**保留署名**即可（写上作者酷安主页 + 项目地址）。

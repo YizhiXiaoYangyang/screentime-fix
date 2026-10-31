@@ -6,7 +6,9 @@ SDK=/root/android-sdk
 AJ="$SDK/platforms/android-37.0/android.jar"
 XP=$(find /root/.gradle/caches -path '*de.robv.android.xposed/api/82*' -name 'api-82.jar' | head -1)
 OUT=build
-KS=eta.jks
+KS=${KS:-stfix.jks}
+KS_ALIAS=${KS_ALIAS:-stfix}
+KS_PASS=${KS_PASS:-changeit}
 
 [ -n "$XP" ] || { echo "xposed api-82.jar not found"; exit 1; }
 
@@ -38,11 +40,11 @@ cp "$OUT/base.apk" "$OUT/unsigned.apk"
 
 echo "== sign"
 if [ ! -f "$KS" ]; then
-    keytool -genkeypair -keystore "$KS" -alias eta -keyalg RSA -keysize 2048 \
-        -validity 10000 -storepass eta12345 -keypass eta12345 \
-        -dname "CN=eta, OU=lab, O=eta, C=CN" >/dev/null 2>&1
+    keytool -genkeypair -keystore "$KS" -alias "$KS_ALIAS" -keyalg RSA -keysize 2048 \
+        -validity 10000 -storepass "$KS_PASS" -keypass "$KS_PASS" \
+        -dname "CN=screentime-fix, OU=oss, O=screentime-fix, C=CN" >/dev/null 2>&1
 fi
-apksigner sign --ks "$KS" --ks-pass pass:eta12345 --key-pass pass:eta12345 \
+apksigner sign --ks "$KS" --ks-pass pass:"$KS_PASS" --key-pass pass:"$KS_PASS" \
     --min-sdk-version 24 --out "$OUT/screentime.apk" "$OUT/unsigned.apk"
 apksigner verify --print-certs "$OUT/screentime.apk" | head -5
 ls -l "$OUT/screentime.apk"
