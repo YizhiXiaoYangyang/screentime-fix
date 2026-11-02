@@ -33,6 +33,8 @@ Redmi / HyperOS 3.0 / 设置 16.3.260227.00 / LSPosed(Vector)
 
 ## 安装
 
+**直接去 [Releases](https://github.com/YizhiXiaoYangyang/screentime-fix/releases/latest) 下最新的 `stfix-vX.Y.apk`，不用自己编译。**
+
 1. 安装 APK
 2. LSPosed 里启用模块，作用域**只勾「设置」**
 3. 打开「我真没玩手机」，设好时间段 / 选好要隐藏的 App → 保存 → 退出「屏幕使用时长」再进一次
