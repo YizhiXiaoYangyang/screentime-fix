@@ -3,3 +3,4 @@ eta.jks
 *.class
 .gradle/
 *.apk
+dist/

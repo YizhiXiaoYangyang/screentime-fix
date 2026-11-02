@@ -16,6 +16,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -489,6 +490,22 @@ final class Ui {
             float baseY = h / 2f - (tp.descent() + tp.ascent()) / 2f;
             cv.drawText(text, w / 2f, baseY, tp);
         }
+    }
+
+    // ---------- 输入框 ----------
+
+    /** 单行输入框：统一深浅色、圆角软底、内边距；inputType 由调用方按需覆盖。 */
+    static EditText input(Context c, String hint) {
+        EditText e = new EditText(c);
+        e.setHint(hint);
+        e.setHintTextColor(sub(c));
+        e.setTextColor(text(c));
+        e.setTextSize(15);
+        e.setSingleLine(true);
+        e.setBackground(round(c, fillSoft(c), 14));
+        e.setPadding(dp(c, 14), dp(c, 8), dp(c, 14), dp(c, 8));
+        e.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        return e;
     }
 
     static LinearLayout.LayoutParams lp(int w, int h) {

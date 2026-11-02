@@ -309,6 +309,307 @@ public class CoreTest {
         kv5.put(Cfg.KEY_ENABLED, "0");
         eqFalse("off with default windows", Cfg.fromSource(kv5::get, sat).hasWork());
 
+        // ---------- v4.0 加成：parseAppMinutes / joinAppMinutes ----------
+        java.util.Map<String, Integer> am = Cfg.parseAppMinutes("com.a=30, com.b=-5");
+        eq("appm size", 2, am.size());
+        eq("appm a", 30, get(am, "com.a"));
+        eq("appm 负数夹到 0", 0, get(am, "com.b"));
+        eq("appm null", 0, Cfg.parseAppMinutes(null).size());
+        eq("appm blank", 0, Cfg.parseAppMinutes("   ").size());
+        eq("appm 垃圾项全跳过", 0, Cfg.parseAppMinutes("abc,,=,x=,=5").size());
+        eq("appm 非整数分钟跳过", 0, Cfg.parseAppMinutes("a=abc").size());
+        eq("appm 多个等号跳过", 0, Cfg.parseAppMinutes("a=1=2").size());
+        eq("appm 超 int 跳过", 0, Cfg.parseAppMinutes("a=99999999999999").size());
+        eq("appm 包名 trim", 15, get(Cfg.parseAppMinutes("  com.x  =  15 "), "com.x"));
+        java.util.Map<String, Integer> dup = Cfg.parseAppMinutes("a=10,a=20");
+        eq("appm 重复键取后者", 20, get(dup, "a"));
+        eq("appm 重复键只留一条", 1, dup.size());
+        eq("appm 上限夹 1440", 1440, get(Cfg.parseAppMinutes("a=99999"), "a"));
+        eq("appm 下限夹 0", 0, get(Cfg.parseAppMinutes("a=-99999"), "a"));
+        eq("appm 0 保留条目", 1, Cfg.parseAppMinutes("a=0").size());
+
+        eqTrue("join null", Cfg.joinAppMinutes(null).isEmpty());
+        eqTrue("join 空表", Cfg.joinAppMinutes(new java.util.LinkedHashMap<String, Integer>()).isEmpty());
+        java.util.Map<String, Integer> jm = new java.util.LinkedHashMap<>();
+        jm.put("com.b", 5);
+        jm.put("com.a", 10);
+        eqTrue("join 键排序稳定", "com.a=10,com.b=5".equals(Cfg.joinAppMinutes(jm)));
+        eqTrue("join 值也夹", "a=1440".equals(Cfg.joinAppMinutes(m1("a", 9999))));
+        eqTrue("join 往返", "a=10,b=0".equals(Cfg.joinAppMinutes(Cfg.parseAppMinutes("a=10, b=-3"))));
+        eqTrue("join 往返 跳过非法", "y=5".equals(Cfg.joinAppMinutes(Cfg.parseAppMinutes("x=abc, y=5"))));
+
+        // ---------- v4.0 distribute：最大余数法，桶之和 == 输入 ----------
+        long[] aEven = Cfg.distribute(1000L, new long[]{1, 1, 1, 1});
+        eq("dist 等权 len", 4, aEven.length);
+        eqArr("dist 等权", new long[]{250, 250, 250, 250}, aEven);
+        eq("dist 等权 sum", 1000, sum(aEven));
+
+        long[] a3 = Cfg.distribute(1000L, new long[]{1, 1, 1});
+        eq("dist 3 份 sum", 1000, sum(a3));
+        eqArr("dist 3 份 同余数低位优先", new long[]{334, 333, 333}, a3);
+
+        eqArr("dist 7/3", new long[]{3, 2, 2}, Cfg.distribute(7L, new long[]{1, 1, 1}));
+        eqArr("dist 3:1", new long[]{75, 25}, Cfg.distribute(100L, new long[]{3, 1}));
+        eq("dist 1001 权重 7:13:29 sum", 1001, sum(Cfg.distribute(1001L, new long[]{7, 13, 29})));
+        eqArr("dist 11 权重 1:2:3", new long[]{2, 4, 5}, Cfg.distribute(11L, new long[]{1, 2, 3}));
+
+        eqArr("dist 权重全 0 → 均匀", new long[]{4, 3, 3}, Cfg.distribute(10L, new long[]{0, 0, 0}));
+        eqArr("dist 负权重 → 均匀", new long[]{4, 3, 3}, Cfg.distribute(10L, new long[]{-5, 0, -1}));
+        eq("dist null len", 0, Cfg.distribute(10L, null).length);
+        eq("dist 空数组 len", 0, Cfg.distribute(10L, new long[0]).length);
+        eq("dist delta=0 sum", 0, sum(Cfg.distribute(0L, new long[]{1, 2})));
+        eq("dist delta=0 len", 2, Cfg.distribute(0L, new long[]{1, 2}).length);
+        eq("dist delta<0 sum", 0, sum(Cfg.distribute(-100L, new long[]{1, 2})));
+        eq("dist n=1", 123, Cfg.distribute(123L, new long[]{5})[0]);
+
+        long[] aBigW = new long[]{Long.MAX_VALUE / 2, Long.MAX_VALUE / 2};
+        long[] aBig = Cfg.distribute(1_000_000L, aBigW);
+        eq("dist 超大腿权重 sum", 1_000_000L, sum(aBig));
+        eq("dist 超大腿权重 对半", 500_000L, aBig[0]);
+        eq("dist 不改入参", Long.MAX_VALUE / 2, aBigW[0]);
+
+        // ---------- v4.0 distributeInt：整数次数 ----------
+        int[] iEven = Cfg.distributeInt(10, new long[]{0, 0, 0});
+        eqArr("dint 权重全 0 → 均匀", new int[]{4, 3, 3}, iEven);
+        eq("dint sum", 10, sum(iEven));
+        eqArr("dint 5/2", new int[]{3, 2}, Cfg.distributeInt(5, new long[]{1, 1}));
+        eq("dint null len", 0, Cfg.distributeInt(5, null).length);
+        eq("dint count=0 sum", 0, sum(Cfg.distributeInt(0, new long[]{1, 2})));
+        eq("dint count<0 sum", 0, sum(Cfg.distributeInt(-3, new long[]{1, 2})));
+        eqArr("dint 负权重 → 均匀", new int[]{2, 2, 2}, Cfg.distributeInt(6, new long[]{-1, -1, -1}));
+        eqArr("dint n=1", new int[]{3}, Cfg.distributeInt(3, new long[]{2}));
+
+        long[] aHW = new long[24];
+        for (int i = 0; i < 24; i++) aHW[i] = (i % 5) + 1;
+        int[] iH = Cfg.distributeInt(480, aHW);
+        eq("dint 24 桶 len", 24, iH.length);
+        eq("dint 24 桶 sum", 480, sum(iH));
+
+        long[] aUW = new long[24];
+        aUW[5] = 29;
+        aUW[9] = 3;
+        int[] iU = Cfg.distributeInt(7, aUW);
+        eq("dint 真实解锁权重 sum", 7, sum(iU));
+        eq("dint 真实解锁权重 主桶", 6, iU[5]);
+        eq("dint 真实解锁权重 次桶", 1, iU[9]);
+        eq("dint 真实解锁权重 空桶", 0, iU[0]);
+
+        // ---------- v4.0 distributeInWindows：时段均摊 + 跨零点 ----------
+        List<int[]> win1 = Cfg.parse("480-720");                       // 8:00-12:00
+        long[] aW1 = Cfg.distributeInWindows(240_000L, win1, 24);
+        eq("win len", 24, aW1.length);
+        eq("win sum", 240_000L, sum(aW1));
+        eq("win h8", 60_000L, aW1[8]);
+        eq("win h11", 60_000L, aW1[11]);
+        eq("win h7 窗外 0", 0L, aW1[7]);
+        eq("win h12 窗外 0", 0L, aW1[12]);
+
+        long[] aW2 = Cfg.distributeInWindows(1001L, win1, 24);
+        eq("win 奇数 sum", 1001, sum(aW2));
+        eq("win 奇数 4 桶分摊", 1001, aW2[8] + aW2[9] + aW2[10] + aW2[11]);
+        eqTrue("win 奇数 单桶 250/251", aW2[8] == 250 || aW2[8] == 251);
+
+        long[] aW3 = Cfg.distributeInWindows(480_000L, Cfg.parse("1380-420"), 24);   // 23:00-07:00 跨零点
+        eq("win 跨零点 sum", 480_000L, sum(aW3));
+        eq("win 跨零点 h23", 60_000L, aW3[23]);
+        eq("win 跨零点 h0", 60_000L, aW3[0]);
+        eq("win 跨零点 h6", 60_000L, aW3[6]);
+        eq("win 跨零点 h7 窗外 0", 0L, aW3[7]);
+        eq("win 跨零点 h12 窗外 0", 0L, aW3[12]);
+
+        long[] aW4 = Cfg.distributeInWindows(60_000L, Cfg.parse("30-90"), 24);
+        eq("win 跨小时 sum", 60_000L, sum(aW4));
+        eq("win 跨小时 h0", 30_000L, aW4[0]);
+        eq("win 跨小时 h1", 30_000L, aW4[1]);
+
+        long[] aW5 = Cfg.distributeInWindows(240L, null, 24);
+        eq("win wins=null → 均匀 sum", 240, sum(aW5));
+        eq("win wins=null → 每桶 10", 10, aW5[0]);
+
+        long[] aW6 = Cfg.distributeInWindows(240L, new ArrayList<int[]>(), 24);
+        eq("win wins 空表 → 均匀 sum", 240, sum(aW6));
+        eq("win wins 空表 → 每桶 10", 10, aW6[0]);
+
+        long[] aW7 = Cfg.distributeInWindows(1000L, Cfg.parse("0-60,720-780"), 24);
+        eq("win 两段 sum", 1000, sum(aW7));
+        eq("win 两段 h0", 500, aW7[0]);
+        eq("win 两段 h12", 500, aW7[12]);
+
+        long[] aW8 = Cfg.distributeInWindows(600L, Cfg.parse("0-720"), 12);   // n=12 也支持
+        eq("win n12 sum", 600, sum(aW8));
+        eq("win n12 前六桶", 600, aW8[0] + aW8[1] + aW8[2] + aW8[3] + aW8[4] + aW8[5]);
+
+        long[] aW9 = Cfg.distributeInWindows(24L, Cfg.parse("600-600"), 24);  // 零长窗口 → 均匀兜底
+        eq("win 零长窗口 sum", 24, sum(aW9));
+        eq("win 零长窗口 每桶 1", 1, aW9[0]);
+
+        eq("win n=0 len", 0, Cfg.distributeInWindows(100L, win1, 0).length);
+        eq("win delta=0 sum", 0, sum(Cfg.distributeInWindows(0L, win1, 24)));
+        eq("win delta<0 sum", 0, sum(Cfg.distributeInWindows(-50L, win1, 24)));
+
+        // ---------- v4.0 Snapshot 默认值 / fromSource / hasConfigValues ----------
+        Cfg.Snapshot aDef = new Cfg.Snapshot();
+        eq("snap add 默认 total", 0, aDef.addTotal);
+        eq("snap add 默认 apps", 0, aDef.addApps.size());
+        eq("snap add 默认 unlock", 0, aDef.addUnlock);
+        eq("snap add 默认 windows", 0, aDef.addWindows.size());
+        eqTrue("snap add 默认 carrier 空", aDef.addCarrier.isEmpty());
+        eqTrue("snap add 默认 spread=carrier", Cfg.SPREAD_CARRIER.equals(aDef.addSpread));
+        eqFalse("snap add 默认 hasAdd", aDef.hasAdd());
+        eqFalse("snap add 空源 hasAdd", Cfg.fromSource(k -> null, sat).hasAdd());
+        eq("snap add 空源 total", 0, Cfg.fromSource(k -> null, sat).addTotal);
+        eq("snap add 空源 windows", 0, Cfg.fromSource(k -> null, sat).addWindows.size());
+        eqTrue("snap add 空源 carrier 空", Cfg.fromSource(k -> null, sat).addCarrier.isEmpty());
+
+        java.util.Map<String, String> kvAdd = new java.util.HashMap<>();
+        kvAdd.put(Cfg.KEY_ADD_TOTAL, "9999");
+        kvAdd.put(Cfg.KEY_ADD_APPS, "com.a=30, com.b=-5");
+        kvAdd.put(Cfg.KEY_ADD_UNLOCK, "9999");
+        kvAdd.put(Cfg.KEY_ADD_WINDOWS, "480-720");
+        kvAdd.put(Cfg.KEY_ADD_CARRIER, "  com.android.chrome  ");
+        kvAdd.put(Cfg.KEY_ADD_SPREAD, " WEIGHT ");
+        Cfg.Snapshot aSnap = Cfg.fromSource(kvAdd::get, sat);
+        eq("snap add total 夹 1440", 1440, aSnap.addTotal);
+        eq("snap add apps size", 2, aSnap.addApps.size());
+        eq("snap add apps 值", 30, get(aSnap.addApps, "com.a"));
+        eq("snap add apps 负数夹 0", 0, get(aSnap.addApps, "com.b"));
+        eq("snap add unlock 夹 480", 480, aSnap.addUnlock);
+        eq("snap add windows size", 1, aSnap.addWindows.size());
+        eq("snap add windows start", 480, aSnap.addWindows.get(0)[0]);
+        eq("snap add windows end", 720, aSnap.addWindows.get(0)[1]);
+        eqTrue("snap add carrier trim", "com.android.chrome".equals(aSnap.addCarrier));
+        eqTrue("snap add spread 小写归一", Cfg.SPREAD_WEIGHT.equals(aSnap.addSpread));
+        eqTrue("snap add hasAdd", aSnap.hasAdd());
+        // 新键不能影响老键的解析
+        eq("snap add 不影响窗口", 1, aSnap.windows.size());
+        eq("snap add 不影响 cap", 0, aSnap.cap);
+        eqTrue("snap add 不影响 scope", Cfg.SCOPE_ALL.equals(aSnap.scope));
+        eq("snap add 不影响 jitter", 0, aSnap.jitter);
+
+        java.util.Map<String, String> kvSpread = new java.util.HashMap<>();
+        kvSpread.put(Cfg.KEY_ADD_SPREAD, "junk");
+        eqTrue("snap add spread 垃圾回落", Cfg.SPREAD_CARRIER.equals(
+                Cfg.fromSource(kvSpread::get, sat).addSpread));
+
+        java.util.Map<String, String> kvAppsOnly = new java.util.HashMap<>();
+        kvAppsOnly.put(Cfg.KEY_ADD_APPS, "com.a=5");
+        eqTrue("hasAdd 只设 apps", Cfg.fromSource(kvAppsOnly::get, sat).hasAdd());
+        java.util.Map<String, String> kvUnlockOnly = new java.util.HashMap<>();
+        kvUnlockOnly.put(Cfg.KEY_ADD_UNLOCK, "3");
+        eqTrue("hasAdd 只设 unlock", Cfg.fromSource(kvUnlockOnly::get, sat).hasAdd());
+        java.util.Map<String, String> kvWinOnly = new java.util.HashMap<>();
+        kvWinOnly.put(Cfg.KEY_ADD_WINDOWS, "480-720");
+        kvWinOnly.put(Cfg.KEY_ADD_CARRIER, "com.x");
+        eqFalse("hasAdd 只设时段/承载不算", Cfg.fromSource(kvWinOnly::get, sat).hasAdd());
+
+        // 6 个新键都算「配过」，否则只设加成会被当成没配过去搬老值
+        eqTrue("cfg add total", Cfg.hasConfigValues(java.util.Arrays.asList(Cfg.KEY_ADD_TOTAL)));
+        eqTrue("cfg add apps", Cfg.hasConfigValues(java.util.Arrays.asList(Cfg.KEY_ADD_APPS)));
+        eqTrue("cfg add unlock", Cfg.hasConfigValues(java.util.Arrays.asList(Cfg.KEY_ADD_UNLOCK)));
+        eqTrue("cfg add windows", Cfg.hasConfigValues(java.util.Arrays.asList(Cfg.KEY_ADD_WINDOWS)));
+        eqTrue("cfg add carrier", Cfg.hasConfigValues(java.util.Arrays.asList(Cfg.KEY_ADD_CARRIER)));
+        eqTrue("cfg add spread", Cfg.hasConfigValues(java.util.Arrays.asList(Cfg.KEY_ADD_SPREAD)));
+        eqFalse("cfg 无关键不算", Cfg.hasConfigValues(java.util.Arrays.asList("stfix_other")));
+
+        // normalizeSpread
+        eqTrue("spread null", Cfg.SPREAD_CARRIER.equals(Cfg.normalizeSpread(null)));
+        eqTrue("spread 空串", Cfg.SPREAD_CARRIER.equals(Cfg.normalizeSpread("   ")));
+        eqTrue("spread carrier", Cfg.SPREAD_CARRIER.equals(Cfg.normalizeSpread("carrier")));
+        eqTrue("spread weight 大写", Cfg.SPREAD_WEIGHT.equals(Cfg.normalizeSpread(" WEIGHT ")));
+        eqTrue("spread fake", Cfg.SPREAD_FAKE.equals(Cfg.normalizeSpread("FAKE")));
+        eqTrue("spread 垃圾回落", Cfg.SPREAD_CARRIER.equals(Cfg.normalizeSpread("随便")));
+
+        // 常量值：C 按字符串写盘、B 按字符串读，改了就是失配
+        eqTrue("const add total", "stfix_add_total".equals(Cfg.KEY_ADD_TOTAL));
+        eqTrue("const add apps", "stfix_add_apps".equals(Cfg.KEY_ADD_APPS));
+        eqTrue("const add unlock", "stfix_add_unlock".equals(Cfg.KEY_ADD_UNLOCK));
+        eqTrue("const add windows", "stfix_add_windows".equals(Cfg.KEY_ADD_WINDOWS));
+        eqTrue("const add carrier", "stfix_add_carrier".equals(Cfg.KEY_ADD_CARRIER));
+        eqTrue("const add spread", "stfix_add_spread".equals(Cfg.KEY_ADD_SPREAD));
+        eqTrue("const spread carrier", "carrier".equals(Cfg.SPREAD_CARRIER));
+        eqTrue("const spread weight", "weight".equals(Cfg.SPREAD_WEIGHT));
+        eqTrue("const spread fake", "fake".equals(Cfg.SPREAD_FAKE));
+        eqTrue("const fake pkg", "com.android.settings".equals(Cfg.FAKE_PKG));
+
+        // ---------- v4.1：窗口重叠 windowsOverlap ----------
+        // 空 / null：任一组没有有效窗口就没有重叠
+        eqFalse("ovl null/null", Cfg.windowsOverlap(null, null));
+        eqFalse("ovl null/list", Cfg.windowsOverlap(null, w(0, 60)));
+        eqFalse("ovl list/null", Cfg.windowsOverlap(w(0, 60), null));
+        eqFalse("ovl empty/empty", Cfg.windowsOverlap(w(), w()));
+        eqFalse("ovl empty/list", Cfg.windowsOverlap(new ArrayList<int[]>(), w(0, 1440)));
+        eqFalse("ovl list/empty", Cfg.windowsOverlap(w(0, 1440), new ArrayList<int[]>()));
+
+        // 相接不算重叠（端点共用一分钟都不行）
+        eqFalse("ovl touch 30-60/60-90", Cfg.windowsOverlap(w(30, 60), w(60, 90)));
+        eqFalse("ovl touch 60-90/30-60", Cfg.windowsOverlap(w(60, 90), w(30, 60)));
+        eqFalse("ovl touch 0-600/600-1440", Cfg.windowsOverlap(w(0, 600), w(600, 1440)));
+        eqFalse("ovl touch hour", Cfg.windowsOverlap(w(480, 540), w(540, 600)));
+
+        // 真重叠
+        eqTrue("ovl by 1min", Cfg.windowsOverlap(w(30, 60), w(59, 90)));
+        eqTrue("ovl contained", Cfg.windowsOverlap(w(30, 120), w(60, 90)));
+        eqTrue("ovl identical", Cfg.windowsOverlap(w(30, 60), w(30, 60)));
+        eqTrue("ovl multi hit", Cfg.windowsOverlap(w(0, 60, 120, 180), w(179, 240)));
+        eqFalse("ovl multi miss", Cfg.windowsOverlap(w(0, 60, 120, 180), w(180, 240)));
+        eqTrue("ovl full day", Cfg.windowsOverlap(w(0, 1440), w(600, 660)));
+
+        // 跨零点
+        eqTrue("ovl wrap vs wrap", Cfg.windowsOverlap(w(1380, 420), w(300, 120)));
+        eqFalse("ovl wrap vs noon", Cfg.windowsOverlap(w(1380, 420), w(720, 780)));
+        eqFalse("ovl wrap touch 07", Cfg.windowsOverlap(w(1380, 420), w(420, 480)));
+        eqTrue("ovl wrap tail edge", Cfg.windowsOverlap(w(1380, 420), w(400, 480)));
+        eqTrue("ovl wrap head", Cfg.windowsOverlap(w(1380, 420), w(0, 60)));
+        eqTrue("ovl wrap vs early", Cfg.windowsOverlap(w(20, 60), w(1380, 30)));
+
+        // 零长窗口（起止相等）= 空，与 overlapMinutes 的判据一致
+        eqFalse("ovl zero/real", Cfg.windowsOverlap(w(600, 600), w(600, 660)));
+        eqFalse("ovl zero/full day", Cfg.windowsOverlap(w(600, 600), w(0, 1440)));
+        eqFalse("ovl zero/zero", Cfg.windowsOverlap(w(600, 600), w(600, 600)));
+
+        // 坏元素不抛异常（hook 端可能塞进来）
+        List<int[]> withNullA = new ArrayList<>();
+        withNullA.add(null);
+        withNullA.add(new int[]{30, 60});
+        eqTrue("ovl null elem ignored", Cfg.windowsOverlap(withNullA, w(0, 60)));
+        List<int[]> shortA = new ArrayList<>();
+        shortA.add(new int[]{30});
+        eqFalse("ovl short elem ignored", Cfg.windowsOverlap(shortA, w(720, 780)));
+
+        // ---------- v4.1：整小时覆盖 fullyCoveredHours ----------
+        eq("fh null", 0, Cfg.fullyCoveredHours(null));
+        eq("fh empty", 0, Cfg.fullyCoveredHours(w()));
+        eq("fh whole day", 24, Cfg.fullyCoveredHours(w(0, 1440)));
+        eq("fh half day 8-24", 16, Cfg.fullyCoveredHours(w(480, 1440)));
+        eq("fh 8-12", 4, Cfg.fullyCoveredHours(w(480, 720)));
+        eq("fh 1-3", 2, Cfg.fullyCoveredHours(w(60, 180)));
+        eq("fh zero win", 0, Cfg.fullyCoveredHours(w(600, 600)));
+        eq("fh 30-420", 6, Cfg.fullyCoveredHours(w(30, 420)));
+        eq("fh wrap night", 8, Cfg.fullyCoveredHours(w(1380, 420)));
+
+        // 整小时边界：>= 60 才算满
+        eq("fh 0-60 exact", 1, Cfg.fullyCoveredHours(w(0, 60)));
+        eq("fh 0-59 short", 0, Cfg.fullyCoveredHours(w(0, 59)));
+        eq("fh 1-60 short", 0, Cfg.fullyCoveredHours(w(1, 60)));
+        eq("fh 30-90 split", 0, Cfg.fullyCoveredHours(w(30, 90)));
+        // 并集：两段加起来满一小时就算
+        eq("fh union hour0", 1, Cfg.fullyCoveredHours(w(0, 30, 20, 60)));
+        eq("fh union 59min", 0, Cfg.fullyCoveredHours(w(0, 30, 31, 60)));
+        // 同一小时内两段重叠：按 coveredMinutes 的真实行为算（先求和再封顶），
+        // 因为 trimDetail 就是拿这个值把那一个小时清成 0 的 —— 加成要避开的正是那种小时
+        eq("fh overlapping in hour", 1, Cfg.fullyCoveredHours(w(10, 40, 20, 50)));
+        eq("fh overlapping wrap", 17, Cfg.fullyCoveredHours(w(1259, 834, 1232, 808)));
+        // 一小时内的窗口互不重叠时，与 coveredMinutes >= 60 的口径一致（R3 的原式）
+        eq("fh disjoint == covered", Cfg.fullyCoveredHours(w(480, 720, 780, 900)), 6);
+        // 坏元素：挑掉后照算
+        List<int[]> fhNull = new ArrayList<>();
+        fhNull.add(null);
+        fhNull.add(new int[]{0, 60});
+        eq("fh null elem ignored", 1, Cfg.fullyCoveredHours(fhNull));
+        // 与 coveredMinutes 判据对表（R3 用的就是这个式子）
+        eq("fh == covered>=60 table", Cfg.fullyCoveredHours(w(480, 540)),
+                Cfg.coveredMinutes(w(480, 540), 480, 540) >= 60 ? 1 : 0);
+
         if (failed == 0) System.out.println("OK: all core tests passed");
         else System.out.println("FAILED: " + failed);
         if (failed != 0) System.exit(1);
@@ -320,6 +621,64 @@ public class CoreTest {
 
     private static void eqFalse(String name, boolean v) {
         eq(name, 0, v ? 1 : 0);
+    }
+
+    private static long sum(long[] a) {
+        long s = 0;
+        for (long v : a) s += v;
+        return s;
+    }
+
+    private static int sum(int[] a) {
+        int s = 0;
+        for (int v : a) s += v;
+        return s;
+    }
+
+    private static void eqArr(String name, long[] expect, long[] actual) {
+        if (expect == null || actual == null || expect.length != actual.length) {
+            failed++;
+            System.out.println("FAIL " + name + " 长度 expect="
+                    + (expect == null ? "null" : String.valueOf(expect.length)) + " actual="
+                    + (actual == null ? "null" : String.valueOf(actual.length)));
+            return;
+        }
+        for (int i = 0; i < expect.length; i++) {
+            if (expect[i] != actual[i]) {
+                failed++;
+                System.out.println("FAIL " + name + " #" + i + " expect=" + expect[i] + " actual=" + actual[i]);
+                return;
+            }
+        }
+    }
+
+    private static void eqArr(String name, int[] expect, int[] actual) {
+        if (expect == null || actual == null || expect.length != actual.length) {
+            failed++;
+            System.out.println("FAIL " + name + " 长度 expect="
+                    + (expect == null ? "null" : String.valueOf(expect.length)) + " actual="
+                    + (actual == null ? "null" : String.valueOf(actual.length)));
+            return;
+        }
+        for (int i = 0; i < expect.length; i++) {
+            if (expect[i] != actual[i]) {
+                failed++;
+                System.out.println("FAIL " + name + " #" + i + " expect=" + expect[i] + " actual=" + actual[i]);
+                return;
+            }
+        }
+    }
+
+    private static int get(java.util.Map<String, Integer> m, String k) {
+        if (m == null) return -1;
+        Integer v = m.get(k);
+        return v == null ? -1 : v;
+    }
+
+    private static java.util.Map<String, Integer> m1(String k, int v) {
+        java.util.Map<String, Integer> m = new java.util.LinkedHashMap<>();
+        m.put(k, v);
+        return m;
     }
 
     private static java.util.Calendar cal(int y, int m, int d) {

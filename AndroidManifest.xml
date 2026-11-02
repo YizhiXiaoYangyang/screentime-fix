@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.eta.lab.screentime"
-    android:versionCode="14"
-    android:versionName="3.1">
+    android:versionCode="16"
+    android:versionName="4.1">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="35" />
 
@@ -25,6 +25,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 反向加成设置页：从首页「我在玩手机啊」卡片进入，不对外暴露 -->
+        <activity
+            android:name=".AddActivity"
+            android:label="我在玩手机啊"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
 
         <!-- 只读配置出口：XSharedPreferences 读不到时的退路，exported 无自定义权限，只暴露 query -->
         <provider

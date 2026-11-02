@@ -54,6 +54,25 @@ final class Store {
         e.commit();
     }
 
+    /**
+     * v4.0 加成：只写 stfix_add_* 这几个键（save(...) 负责的那些键一个都不碰），commit 同步落盘。
+     * 参数在这里再夹一次，保证「写进去的 == 读回来的」
+     * （addTotal 0..1440，addUnlock 0..480，App 分钟 0..1440）。
+     */
+    static void saveAdd(Context c, int addTotal, Map<String, Integer> addApps, int addUnlock,
+                        String addWindows, String addCarrier, String addSpread) {
+        SharedPreferences.Editor e = prefs(c).edit();
+        e.putString(Cfg.KEY_ADD_TOTAL, String.valueOf(Cfg.clampInt(addTotal, 0, Cfg.MAX_ADD_TOTAL)));
+        e.putString(Cfg.KEY_ADD_APPS, Cfg.joinAppMinutes(addApps));
+        e.putString(Cfg.KEY_ADD_UNLOCK, String.valueOf(Cfg.clampInt(addUnlock, 0, Cfg.MAX_ADD_UNLOCK)));
+        e.putString(Cfg.KEY_ADD_WINDOWS, addWindows == null ? "" : addWindows.trim());
+        e.putString(Cfg.KEY_ADD_CARRIER, addCarrier == null ? "" : addCarrier.trim());
+        e.putString(Cfg.KEY_ADD_SPREAD, Cfg.normalizeSpread(addSpread));
+        // 写入戳：provider / XSharedPreferences 靠它判断「新通道里已经有数据」
+        e.putString(Cfg.KEY_VER, String.valueOf(System.currentTimeMillis()));
+        e.commit();
+    }
+
     private static void migrateIfNeeded(Context c, SharedPreferences p) {
         if (!Cfg.shouldMigrate(p.getBoolean(Cfg.KEY_MIGRATED, false), hasValues(p))) return;
         Map<String, String> legacy = readLegacy(c);

@@ -225,6 +225,48 @@ public class MainActivity extends Activity {
 
         mScrollBody.addView(appsCard, cardLp());
 
+        // ---- 我在玩手机啊（反向加成） ----
+        Ui.Card addCard = new Ui.Card(this);
+        addCard.setPadding(Ui.dp(this, 18), Ui.dp(this, 14), Ui.dp(this, 16), Ui.dp(this, 14));
+
+        LinearLayout addHead = new LinearLayout(this);
+        addHead.setOrientation(LinearLayout.HORIZONTAL);
+        addHead.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout addTexts = new LinearLayout(this);
+        addTexts.setOrientation(LinearLayout.VERTICAL);
+        addHead.addView(addTexts, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView addTitle = Ui.label(this, "我在玩手机啊", 15, Ui.text(this));
+        addTitle.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                android.graphics.Typeface.NORMAL));
+        addTexts.addView(addTitle);
+
+        TextView addSub = Ui.label(this, "反向：把时长加上去", 12, Ui.sub(this));
+        addSub.setLineSpacing(Ui.dp(this, 3), 1f);
+        LinearLayout.LayoutParams addSubLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        addSubLp.topMargin = Ui.dp(this, 4);
+        addTexts.addView(addSub, addSubLp);
+
+        TextView addArrow = Ui.label(this, "›", 17, Ui.sub(this));
+        addArrow.setAlpha(0.6f);
+        LinearLayout.LayoutParams addArrowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        addArrowLp.leftMargin = Ui.dp(this, 8);
+        addHead.addView(addArrow, addArrowLp);
+
+        addCard.addView(addHead);
+        addCard.setOnClickListener(v -> {
+            try {
+                startActivity(new android.content.Intent(this, AddActivity.class));
+            } catch (Throwable t) {
+                toast("打不开加成设置页");
+            }
+        });
+        mScrollBody.addView(addCard, cardLp());
+
         // ---- 生效范围 / 上限 / 抖动 ----
         Ui.Card ruleCard = new Ui.Card(this);
         ruleCard.setPadding(Ui.dp(this, 18), Ui.dp(this, 14), Ui.dp(this, 16), Ui.dp(this, 6));
@@ -342,7 +384,7 @@ public class MainActivity extends Activity {
         osLp.topMargin = Ui.dp(this, 14);
         mScrollBody.addView(openStats, osLp);
 
-        TextView ver = Ui.label(this, "v3.1 · 作用域只勾「设置」", 11, Ui.sub(this));
+        TextView ver = Ui.label(this, "v4.1 · 作用域只勾「设置」", 11, Ui.sub(this));
         ver.setAlpha(0.75f);
         ver.setGravity(Gravity.CENTER_HORIZONTAL);
         LinearLayout.LayoutParams verLp = new LinearLayout.LayoutParams(
