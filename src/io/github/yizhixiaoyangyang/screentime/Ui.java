@@ -1,4 +1,4 @@
-package com.eta.lab.screentime;
+package io.github.yizhixiaoyangyang.screentime;
 
 import android.app.WallpaperManager;
 import android.content.Context;

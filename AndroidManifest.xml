@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.eta.lab.screentime"
-    android:versionCode="16"
-    android:versionName="4.1">
+    package="io.github.yizhixiaoyangyang.screentime"
+    android:versionCode="18"
+    android:versionName="4.2">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="35" />
 
@@ -37,7 +37,7 @@
         <!-- 只读配置出口：XSharedPreferences 读不到时的退路，exported 无自定义权限，只暴露 query -->
         <provider
             android:name=".ConfigProvider"
-            android:authorities="com.eta.lab.screentime.config"
+            android:authorities="io.github.yizhixiaoyangyang.screentime.config"
             android:exported="true"
             android:enabled="true" />
 

@@ -1,4 +1,4 @@
-package com.eta.lab.screentime;
+package io.github.yizhixiaoyangyang.screentime;
 
 import android.content.ContentResolver;
 import android.content.Context;

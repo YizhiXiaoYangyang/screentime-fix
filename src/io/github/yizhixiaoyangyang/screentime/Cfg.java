@@ -1,4 +1,4 @@
-package com.eta.lab.screentime;
+package io.github.yizhixiaoyangyang.screentime;
 
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -14,9 +14,9 @@ public final class Cfg {
     /** 模块自己那套 SharedPreferences 的文件名（hook 端用 XSharedPreferences 或 provider 读） */
     public static final String PREFS_NAME = "stfix";
     /** 本模块包名：XSharedPreferences 用它定位模块自己的数据目录 */
-    public static final String PKG = "com.eta.lab.screentime";
+    public static final String PKG = "io.github.yizhixiaoyangyang.screentime";
     /** 配置 provider（XSharedPreferences 读不到时的退路），见 AndroidManifest 的 <provider> */
-    public static final String PROVIDER_AUTHORITY = "com.eta.lab.screentime.config";
+    public static final String PROVIDER_AUTHORITY = "io.github.yizhixiaoyangyang.screentime.config";
     /** 配置写入戳：只要模块存过一次配置就有，用来判断「新通道里到底有没有数据」 */
     public static final String KEY_VER = "stfix_ver";
     /** 老用户迁移标记（Settings.Global → 本机 SharedPreferences，只做一次） */

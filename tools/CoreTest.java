@@ -1,4 +1,4 @@
-import com.eta.lab.screentime.Cfg;
+import io.github.yizhixiaoyangyang.screentime.Cfg;
 
 import java.util.ArrayList;
 import java.util.List;

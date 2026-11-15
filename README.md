@@ -1,8 +1,10 @@
 # 我真没玩手机
 
+> **包名（v4.2 起）**：`io.github.yizhixiaoyangyang.screentime`。上架 LSPosed 官方模块仓库要求包名归属满足 `io.github.<用户名>.<模块>`，原 `com.eta.lab.screentime` 不满足。新旧包名是**两个不同的应用，只能留一个**，否则统计数据会被裁两次。升级：装新包 → LSPosed 里重新启用并勾「设置」→ 打开新模块把时间段重设一遍（旧配置不会自动搬过去）。
+
 一个 LSPosed 模块：让「设置 → 屏幕使用时长」里，指定时间段的使用时长和解锁次数直接消失，也能单独抹掉某个 App 的全部记录；反向也支持——能给总时长、单个 App、解锁次数往上加（v4.0「我在玩手机啊」）。
 
-（前身叫「屏幕时长修正」，v2.0 起改名并重做界面；v2.1 加了「单独隐藏某个 App」；v3.0 加了生效范围、每日总时长上限和数字抖动；v3.1 不再需要 WRITE_SECURE_SETTINGS，砍掉状态灯；v4.0 加了反向加成。）
+（前身叫「屏幕时长修正」，v2.0 起改名并重做界面；v2.1 加了「单独隐藏某个 App」；v3.0 加了生效范围、每日总时长上限和数字抖动；v3.1 不再需要 WRITE_SECURE_SETTINGS，砍掉状态灯；v4.0 加了反向加成；v4.2 换成 `io.github.*` 包名并上架 LSPosed 官方模块仓库。）
 
 ## 它做什么
 
@@ -47,8 +49,8 @@ Redmi / HyperOS 3.0 / 设置 16.3.260227.00 / LSPosed(Vector)
 
 - 模块 App 把配置写进**自己的** SharedPreferences（文件名 `stfix`，`MODE_PRIVATE`），`commit()` 同步落盘；
 - hook 端（跑在「设置」进程里）按顺序读两条通道，**谁先读到数据就锁定谁**：
-  1. `de.robv.android.xposed.XSharedPreferences("com.eta.lab.screentime", "stfix")`，每次 `reload()`，改完保存立刻能读到新值；
-  2. 读不到就退到模块 App 里那个只读 ContentProvider（`content://com.eta.lab.screentime.config/conf`，`exported`、无自定义权限、只暴露 `query`），每次查询都是实时值。
+  1. `de.robv.android.xposed.XSharedPreferences("io.github.yizhixiaoyangyang.screentime", "stfix")`，每次 `reload()`，改完保存立刻能读到新值；
+  2. 读不到就退到模块 App 里那个只读 ContentProvider（`content://io.github.yizhixiaoyangyang.screentime.config/conf`，`exported`、无自定义权限、只暴露 `query`），每次查询都是实时值。
 - 实测（Redmi / HyperOS 3 / LSPosed(Vector)）：**XSharedPreferences 在这个环境下读不到配置**（返回空），所以实际生效的是 provider 通道；xprefs 那条留着，换到能读的环境会自动用回去。判别看 logcat：`[ScreenTimeFix] cfg via=xprefs` 或 `cfg via=provider`。
 - **老用户升级**：第一次读配置时，如果新通道里一条配置都没有、而 `Settings.Global` 里还有 v3.0 的老值（读它不需要权限），会把这批老值一次性搬进来，配置不会丢。之后系统设置里的 `stfix_*` 就再也不会被读写。
 

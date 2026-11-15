@@ -17,7 +17,7 @@ mkdir -p "$OUT/classes"
 
 echo "== core tests"
 rm -rf /tmp/coretest && mkdir -p /tmp/coretest
-javac -encoding UTF-8 -d /tmp/coretest src/com/eta/lab/screentime/Cfg.java tools/CoreTest.java
+javac -encoding UTF-8 -d /tmp/coretest src/io/github/yizhixiaoyangyang/screentime/Cfg.java tools/CoreTest.java
 java -cp /tmp/coretest CoreTest
 
 echo "== javac"
@@ -33,10 +33,11 @@ aapt2 link -o "$OUT/base.apk" --manifest AndroidManifest.xml -I "$AJ" \
     --min-sdk-version 24 --target-sdk-version 35 "$OUT/res.zip"
 
 echo "== package"
-mkdir -p "$OUT/assets"
-echo "com.eta.lab.screentime.HookEntry" > "$OUT/assets/xposed_init"
+mkdir -p "$OUT/assets" "$OUT/META-INF/xposed"
+echo "io.github.yizhixiaoyangyang.screentime.HookEntry" > "$OUT/assets/xposed_init"
+printf 'com.xiaomi.misettings\n' > "$OUT/META-INF/xposed/scope.list"
 cp "$OUT/base.apk" "$OUT/unsigned.apk"
-(cd "$OUT" && zip -q unsigned.apk classes.dex && zip -q -r unsigned.apk assets)
+(cd "$OUT" && zip -q unsigned.apk classes.dex && zip -q -r unsigned.apk assets META-INF)
 
 echo "== sign"
 if [ ! -f "$KS" ]; then
