@@ -35,7 +35,10 @@ Redmi / HyperOS 3.0 / 设置 16.3.260227.00 / LSPosed(Vector)
 
 ## 安装
 
-**直接去 [Releases](https://github.com/YizhiXiaoYangyang/screentime-fix/releases/latest) 下最新的 `stfix-vX.Y.apk`，不用自己编译。**
+**装法两种：**
+
+- 在 LSPosed 管理器的「模块仓库」里搜「我真没玩手机」，或直接开 [官方仓库页](https://modules.lsposed.org/module/io.github.yizhixiaoyangyang.screentime/)，以后有新版本会提示更新
+- 或者去 [Releases](https://github.com/YizhiXiaoYangyang/screentime-fix/releases/latest) 下最新的 `stfix-vX.Y.apk`，不用自己编译
 
 1. 安装 APK
 2. LSPosed 里启用模块，作用域**只勾「设置」**
